@@ -49,7 +49,7 @@ export default function ViewerPage({ tunnelId, active }) {
   useTunnelSocket(tunnelId, (msg) => {
     if (!msg.type) return
     refreshMeta()
-    if (['realigned', 'merged', 'camera_updated', 'layout_updated'].includes(msg.type)) {
+    if (['realigned', 'merged', 'camera_updated', 'layout_updated', 'photo_updated'].includes(msg.type)) {
       cacheRef.current.clear()
       pendingRef.current.clear()
       setGroups(new Map())

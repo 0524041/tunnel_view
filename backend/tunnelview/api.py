@@ -406,6 +406,7 @@ def create_app(workspace: Workspace) -> FastAPI:
             img = Image.open(path)
             if needs_transpose:
                 img = ImageOps.exif_transpose(img)
+                img = img.convert("RGB")
             else:
                 img.draft("RGB", (w * 2, w * 2)) if w else None
                 img = img.convert("RGB")
