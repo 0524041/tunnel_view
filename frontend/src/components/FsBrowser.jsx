@@ -22,7 +22,28 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="dialog fs-dialog" onKeyDown={(e) => e.stopPropagation()}>
-        <span className="label">選擇相機照片資料夾（伺服器本機路徑）</span>
+        <span className="label">選擇相機照片資料夾（伺服器本機路徑，支援 NAS／UNC）</span>
+
+        {(data?.roots?.length ?? 0) > 0 && (
+          <div className="fs-roots">
+            {data.roots.map((r) => (
+              <button type="button" key={r} className="btn small mono" onClick={() => setCwd(r)}>{r}</button>
+            ))}
+          </div>
+        )}
+
+        {(data?.recent?.length ?? 0) > 0 && (
+          <div className="fs-recent">
+            <span className="label" style={{ marginBottom: 4 }}>最近使用</span>
+            <div className="fs-recent-list">
+              {data.recent.map((p) => (
+                <button type="button" key={p} className="chip mono" title={p} onClick={() => setCwd(p)}>
+                  …{p.split(/[\\/]/).filter(Boolean).slice(-1)[0] || p}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="fs-pathrow">
           <input
@@ -30,7 +51,7 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && load(cwd)}
-            placeholder="/Volumes/SD 或 E:\Tunnel\Cam1"
+            placeholder="/Volumes/SD 或 E:\Tunnel\Cam1 或 \\NAS\share\Cam1"
           />
           <button type="button" className="btn small" disabled={!data?.parent} onClick={() => setCwd(data.parent)}>
             ⬆ 上層
@@ -40,9 +61,9 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
 
         <div className="fs-main">
           <div className="fs-dirs">
-            {data?.dirs?.length === 0 && <p className="hint" style={{ padding: '8px 4px' }}>沒有子資料夾</p>}
+            {data?.dirs?.length === 0 && data?.path && <p className="hint" style={{ padding: '8px 4px' }}>沒有子資料夾</p>}
             {data?.dirs?.map((d) => (
-              <button type="button" key={d} className="fs-dir mono" onDoubleClick={() => setCwd(joinPath(data.path, d))} onClick={() => setCwd(joinPath(data.path, d))}>
+              <button type="button" key={d} className="fs-dir mono" onClick={() => setCwd(joinPath(data.path, d))}>
                 📁 {d}
               </button>
             ))}
@@ -60,7 +81,7 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
                 <div className="mono hint">{rotation}°</div>
               </div>
             ) : (
-              <p className="hint">此資料夾內沒有 JPG</p>
+              <p className="hint">{data?.path ? '此資料夾內沒有 JPG' : '請先選擇資料夾'}</p>
             )}
             <label className="label" style={{ marginTop: 10 }}>呈現方向</label>
             <select

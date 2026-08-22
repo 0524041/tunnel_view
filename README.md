@@ -23,7 +23,10 @@
 | 匯入對齊 | EXIF 時間排序、未對時相機 Δt 校正、**單調一對一序列對齊**（缺照補 NULL、首張漏拍自動救回、秒級量化精煉） |
 | 里程定位 | 實體里程牌錨定（`K23+150`／`23K+150`／`23+150`／`23150` 四格式）、分段線性內插＋外插、全線毫秒重算 |
 | 檢視 | 多視角同步 pan/zoom、動態縮圖＋原圖逐像素放大、鍵盤全程操作 |
-| 品質工具 | 待檢查清單（確認／標注異常、自動跳下一筆）、檢閱模式三聯比較與群組合併、比例異常偵測與就地旋轉 |
+| 版型 | 相機自由排序（拖曳／點選交換格位）、欄數自訂、建立精靈即時縮圖預覽、事後於資訊面板調整 |
+| 路徑 | 伺服器端目錄瀏覽器：磁碟代號列舉、UNC（`\\NAS\share`）支援、最近路徑書籤——NAS 照片直接讀 |
+| 品質工具 | 待檢查清單（確認／標注異常、自動跳下一筆、卡片縮圖）、檢閱模式三聯比較與群組合併、比例異常偵測（導航軌菱形標記）與就地旋轉 |
+| 檢視體驗 | 完整呈現（contain）／填滿（cover）切換、常駐資訊側欄（錨點｜資訊頁籤）、三段響應式斷點、操作 toast 回饋 |
 | 維運 | 一隧道一 SQLite 檔隨身交付、區網多機即時協同（WebSocket）、舊庫開啟自動遷移 |
 
 ## 快速開始
@@ -54,7 +57,7 @@ cd frontend && npm install && npm run build
 
 ## 使用流程
 
-1. **建立隧道**：首頁 →「建立新隧道」→ 名稱＋起訖樁號（方向由此決定）→ 逐台相機以 📁 瀏覽選擇照片資料夾（含第一張預覽與旋轉設定）→ 對齊分析預覽（Δt 表、缺照分佈）→ 建立
+1. **建立隧道**：首頁 →「建立新隧道」→ 名稱＋起訖樁號（方向由此決定）→ 步驟二為**版型編輯器**：逐台 📁 選資料夾（首張縮圖自動載入、旋轉當場預覽）、拖曳或點選兩格安排相機位置與欄數 → 對齊分析預覽（Δt 表、缺照分佈）→ 建立
 2. **巡覽檢查**：`←`/`→` 逐群組翻閱（每按一次＝一次快門事件）
 3. **里程錨定**：看到實體里程碑按 `Enter`，預填推算值直接改數字；全線推算里程即時更新（`~` 前綴＝推算值）
 4. **精修**：資訊面板可調容差「乾跑預覽」後重新對齊——錨點綁定照片，重建零遺失
@@ -72,6 +75,20 @@ cd frontend && npm install && npm run build
 | 滾輪 / 拖曳 | 同步縮放 / 平移（雙擊復原） |
 | 點擊照片格 | 全螢幕原圖（滾輪逐像素放大、`Tab` 切換視角、`R` 旋轉、`Esc` 關閉） |
 
+## NAS / 網路路徑部署
+
+照片可放在 NAS，伺服器經網路讀取即可：
+
+| Server 環境 | 建議路徑格式 |
+|---|---|
+| Windows | **UNC 直接貼上**：`\\NAS名稱\分享\Cam1`（不建議依賴對應磁碟機代號——代號綁定登入工作階段，服務化執行後會失效） |
+| WSL | CIFS 掛載後使用 `/mnt/nas/Cam1` |
+| macOS | `/Volumes/nas/Cam1` |
+
+- 遠端瀏覽器使用者看到的是 **Server 的目錄**（設計如此，瀏覽端零安裝）
+- 縮圖首次生成需跨網路讀原檔（較慢），之後快取在伺服器本機 `.thumb_cache`——日常瀏覽不吃網路；放大看原圖才再次存取 NAS
+- Windows 磁碟代號由系統 API 列舉，斷線的網路碟不會凍結介面
+
 ## 架構
 
 ```
@@ -87,8 +104,9 @@ backend/tunnelview/
                  schema 版本化，舊庫開啟自動遷移
   importer.py    資料夾掃描、EXIF 讀取（缺漏退 mtime 並標記）、
                  比例異常偵測（唯讀檔頭，不解碼全圖）
-  service.py     視窗查詢、里程跳轉、重新對齊、合併、複核、旋轉
-  api.py         FastAPI 路由 + WebSocket 房間廣播 + 動態縮圖（磁碟快取）
+  service.py     視窗查詢、里程跳轉、重新對齊、合併、複核、旋轉、版型
+  fsutil.py      平台磁碟根列舉（Windows GetLogicalDrives）
+  api.py         FastAPI 路由 + WebSocket 房間廣播 + 動態縮圖（磁碟快取）+ 目錄瀏覽
 
 frontend/src/
   pages/HomePage.jsx      首頁隧道清單（含刪除）
@@ -97,6 +115,8 @@ frontend/src/
   components/CameraGrid   自適應網格、同步 pan/zoom、缺照佔位、⟳ 旋轉鈕
   components/ScrubberRail canvas 導航軌（縮放、四種標記）
   components/TunnelInfoPanel 報告 / 重新對齊 / 待檢查 / 相機旋轉
+  components/LayoutEditor 自由版型編輯器（拖曳交換、真實縮圖、嚮導與面板共用）
+  components/FsBrowser    伺服器端目錄瀏覽器（磁碟根、最近路徑、首張預覽）
   components/ReviewMode   三聯比較與合併裁決
   components/OriginalViewer 原圖覆蓋層 + 底部 EXIF 資訊列
 ```
@@ -111,7 +131,7 @@ frontend/src/
 ## 測試
 
 ```bash
-.venv/bin/python -m pytest backend/tests/ -q     # 後端單元 + API 整合（107 tests）
+.venv/bin/python -m pytest backend/tests/ -q     # 後端單元 + API 整合（119 tests）
 
 # 端對端（需 Playwright chromium；以樣本資料夾跑完整使用者流程）
 TUNNELVIEW_HOME=/tmp/tvdata .venv/bin/python \

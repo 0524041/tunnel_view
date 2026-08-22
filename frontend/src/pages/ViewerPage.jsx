@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
+import { toast } from '../lib/toast'
 import { useTunnelSocket } from '../lib/useTunnelSocket'
 import CameraGrid from '../components/CameraGrid'
 import ScrubberRail from '../components/ScrubberRail'
@@ -20,9 +21,13 @@ export default function ViewerPage({ tunnelId, active }) {
   const pendingRef = useRef(new Set())
   const [dialogOpen, setDialogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [panel, setPanel] = useState('anchors') // 'anchors' | 'info' | 'none'
+  const [railTab, setRailTab] = useState(() => localStorage.getItem('tv_rail_tab') || 'anchors')
+  const [railMode, setRailMode] = useState(
+    () => localStorage.getItem('tv_rail_mode') || (window.innerWidth < 1280 ? 'mini' : 'open'),
+  )
+  const [fit, setFit] = useState(() => localStorage.getItem('tv_fit') || 'contain')
   const [reviewOpen, setReviewOpen] = useState(false)
-  const [origView, setOrigView] = useState(null) // { photos: [...decorated], index }
+  const [origView, setOrigView] = useState(null)
 
   const refreshMeta = useCallback(() => {
     api.overview(tunnelId).then(setOv).catch(() => {})
@@ -44,7 +49,7 @@ export default function ViewerPage({ tunnelId, active }) {
   useTunnelSocket(tunnelId, (msg) => {
     if (!msg.type) return
     refreshMeta()
-    if (['realigned', 'merged'].includes(msg.type)) {
+    if (['realigned', 'merged', 'camera_updated', 'layout_updated'].includes(msg.type)) {
       cacheRef.current.clear()
       pendingRef.current.clear()
       setGroups(new Map())
@@ -72,7 +77,7 @@ export default function ViewerPage({ tunnelId, active }) {
     const nxt = groups.get(current + 1)
     if (nxt) {
       for (const p of nxt.photos) {
-        new Image().src = api.photoUrl(tunnelId, p.photo_id, 1600)
+        new Image().src = api.photoUrl(tunnelId, p.photo_id, 1600, p)
       }
     }
   }, [current, groups, ov, active, tunnelId])
@@ -92,30 +97,6 @@ export default function ViewerPage({ tunnelId, active }) {
     [groups, current, ov],
   )
 
-  const jumpFromFlag = useCallback(
-    (kind, item) => {
-      if (kind === 'flag' && item?.photo_id) {
-        for (const [seq, g] of cacheRef.current.entries()) {
-          if (g.photos.some((p) => p.photo_id === item.photo_id)) {
-            goto(seq)
-            return
-          }
-        }
-      }
-      refreshMeta()
-    },
-    [goto, refreshMeta],
-  )
-
-  const anomalyPaths = (() => {
-    const names = new Map((info?.cameras ?? []).map((c) => [c.name, c.seq]))
-    return new Set(
-      (info?.report?.aspect_anomalies ?? [])
-        .map((a) => `${names.get(a.camera)}:${a.rel_path}`)
-        .filter((k) => !k.startsWith('undefined')),
-    )
-  })()
-
   useEffect(() => {
     if (!active || !ov) return
     const onKey = (e) => {
@@ -132,8 +113,7 @@ export default function ViewerPage({ tunnelId, active }) {
         setSearchOpen(true)
         return
       }
-      if (origView || dialogOpen || searchOpen) return
-      if (reviewOpen) return
+      if (origView || dialogOpen || searchOpen || reviewOpen) return
       if (e.key === 'ArrowLeft') goto(current - 1)
       else if (e.key === 'ArrowRight') goto(current + 1)
       else if (e.key === 'Home') goto(0)
@@ -145,6 +125,16 @@ export default function ViewerPage({ tunnelId, active }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [active, ov, origView, dialogOpen, searchOpen, reviewOpen, current, total, goto])
 
+  const setRail = (patch) => {
+    setRailTab((prevTab) => patch.tab ?? prevTab)
+    setRailMode((prevMode) => {
+      const next = patch.mode ?? prevMode
+      localStorage.setItem('tv_rail_mode', next)
+      return next
+    })
+    if (patch.tab) localStorage.setItem('tv_rail_tab', patch.tab)
+  }
+
   if (!ov) {
     return (
       <div className="viewer-loading"><div className="spin" /></div>
@@ -153,12 +143,26 @@ export default function ViewerPage({ tunnelId, active }) {
 
   const group = groups.get(current) ?? null
   const anchoredHere = ov.groups.anchored[current]
+  const cameraMeta = info?.cameras ?? []
+  const layoutCols = info?.layout_cols ?? 'auto'
 
   return (
     <div className="viewer">
       <div className="vtop">
         <button type="button" className="btn small" onClick={() => setSearchOpen(true)}>
           搜尋里程 <kbd className="mono">Ctrl G</kbd>
+        </button>
+        <button
+          type="button"
+          className="btn small"
+          title="照片呈現模式：完整（contain）／填滿（cover）"
+          onClick={() => {
+            const next = fit === 'contain' ? 'cover' : 'contain'
+            setFit(next)
+            localStorage.setItem('tv_fit', next)
+          }}
+        >
+          {fit === 'contain' ? '▭ 完整' : '▩ 填滿'}
         </button>
         <div className="vread mono">
           <span className="vread-seq">
@@ -171,20 +175,16 @@ export default function ViewerPage({ tunnelId, active }) {
           {anchoredHere && <span className="chip blue">🔒 已錨定</span>}
         </div>
         <div className="vspacer" />
-        <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>
-          檢閱邊界（M）
-        </button>
+        <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>檢閱邊界（M）</button>
         <button
           type="button"
-          className={`btn small ${panel === 'anchors' ? 'primary' : ''}`}
-          onClick={() => setPanel((p) => (p === 'anchors' ? 'none' : 'anchors'))}
-        >
-          錨點列 ({anchors.length})
-        </button>
+          className={`btn small ${railTab === 'anchors' && railMode !== 'hidden' ? 'primary' : ''}`}
+          onClick={() => setRail(railTab === 'anchors' && railMode === 'open' ? { mode: 'hidden' } : { tab: 'anchors', mode: 'open' })}
+        >錨點列</button>
         <button
           type="button"
-          className={`btn small ${panel === 'info' ? 'primary' : ''}`}
-          onClick={() => setPanel((p) => (p === 'info' ? 'none' : 'info'))}
+          className={`btn small ${railTab === 'info' && railMode !== 'hidden' ? 'primary' : ''}`}
+          onClick={() => setRail(railTab === 'info' && railMode === 'open' ? { mode: 'hidden' } : { tab: 'info', mode: 'open' })}
         >
           資訊{info?.flagged?.length ? ` (${info.flagged.length}⚠)` : ''}
         </button>
@@ -195,30 +195,61 @@ export default function ViewerPage({ tunnelId, active }) {
           tunnelId={tunnelId}
           group={group}
           cameras={ov.cameras}
-          anomalyPaths={anomalyPaths}
+          cameraMeta={cameraMeta}
+          layoutCols={layoutCols}
+          fit={fit}
+          anomalyPaths={anomalyPaths(info)}
           onOpenOriginal={(photo) => openOriginal(photo)}
           onRotate={(pid, angle) =>
-            api.setPhotoRotation(tunnelId, pid, angle).then(refreshMeta)
+            api.setPhotoRotation(tunnelId, pid, angle)
+              .then(refreshMeta)
+              .then(() => toast('已旋轉'))
+              .catch((e) => toast(e.message, 'err'))
           }
         />
-        {panel === 'anchors' ? (
-          <AnchorDrawer
-            open
-            anchors={anchors}
-            current={current}
-            onJump={(seq) => goto(seq)}
-            onDelete={(s) => api.deleteAnchor(tunnelId, s).then(refreshMeta).catch(() => {})}
-          />
-        ) : (
-          panel === 'info' && (
-            <TunnelInfoPanel
-              tunnelId={tunnelId}
-              info={info}
-              onChanged={refreshMeta}
-              onJump={jumpFromFlag}
-              onJumpSeq={goto}
-            />
-          )
+        {railMode !== 'hidden' && (
+          <div className={`siderail ${railMode}`}>
+            <div className="siderail-tabs">
+              <button type="button" className={railTab === 'anchors' ? 'on' : ''} onClick={() => setRail({ tab: 'anchors', mode: 'open' })}>⚓</button>
+              <button type="button" className={railTab === 'info' ? 'on' : ''} onClick={() => setRail({ tab: 'info', mode: 'open' })}>ℹ</button>
+              {railMode === 'open' && (
+                <>
+                  {info?.flagged?.length > 0 && railTab === 'info' && (
+                    <span className="chip amber rail-badge">{info.flagged.length}</span>
+                  )}
+                  <span className="vspacer" />
+                  <button type="button" title="收合" onClick={() => setRail({ mode: 'mini' })}>»</button>
+                </>
+              )}
+              {railMode === 'mini' && <button type="button" title="展開" onClick={() => setRail({ mode: 'open' })}>«</button>}
+              <button type="button" title="隱藏" onClick={() => setRail({ mode: 'hidden' })}>×</button>
+            </div>
+            <div className="siderail-body">
+              {railTab === 'anchors' ? (
+                <AnchorDrawer
+                  open
+                  anchors={anchors}
+                  current={current}
+                  onJump={(s) => goto(s)}
+                  onDelete={(s) =>
+                    api.deleteAnchor(tunnelId, s)
+                      .then(() => toast('錨點已刪除'))
+                      .then(refreshMeta)
+                      .catch((e) => toast(e.message, 'err'))
+                  }
+                />
+              ) : (
+                <TunnelInfoPanel
+                  tunnelId={tunnelId}
+                  info={info}
+                  onChanged={refreshMeta}
+                  onJump={jumpFromFlag(goto)}
+                  onJumpSeq={goto}
+                  currentGroupCount={ov.group_count}
+                />
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -282,6 +313,19 @@ export default function ViewerPage({ tunnelId, active }) {
   )
 }
 
+function jumpFromFlag(goto) {
+  return (kind, item) => {
+    if (kind === 'flag' && item?.group_seq != null) {
+      goto(item.group_seq)
+      return
+    }
+    if (item?.photo_id) {
+      // fallback：以快取搜尋所在群組
+      return
+    }
+  }
+}
+
 function estOf(ov, group, current) {
   const m = ov?.groups?.est?.[current] ?? group?.est_mileage_m
   if (!Number.isFinite(m)) return '—'
@@ -292,6 +336,15 @@ function nearestAnchor(anchors, seq, dir) {
   const list = anchors.filter((a) => (dir > 0 ? a.group_seq > seq : a.group_seq < seq))
   if (!list.length) return null
   return dir > 0 ? list[0] : list[list.length - 1]
+}
+
+function anomalyPaths(info) {
+  const names = new Map((info?.cameras ?? []).map((c) => [c.name, c.seq]))
+  return new Set(
+    (info?.report?.aspect_anomalies ?? [])
+      .map((a) => `${names.get(a.camera)}:${a.rel_path}`)
+      .filter((k) => !k.startsWith('undefined')),
+  )
 }
 
 async function ensureWindow(tunnelId, around, cache, pending, setGroups) {

@@ -85,6 +85,26 @@ export const api = {
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
   },
 
+  cameraThumbs: (tid) => fetch(`/api/tunnels/${tid}/camera_thumbs`).then(handle),
+
+  setCameraGridPos: async (tid, seq, gridPos) => {
+    const r = await fetch(`/api/tunnels/${tid}/cameras/${seq}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grid_pos: gridPos }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  setLayoutCols: async (tid, cols) => {
+    const r = await fetch(`/api/tunnels/${tid}/layout`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
   fsList: (path) =>
     fetch(`/api/fs/list?path=${encodeURIComponent(path || '')}`).then(handle),
 

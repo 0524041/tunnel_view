@@ -41,16 +41,27 @@ with sync_playwright() as p:
     page.screenshot(path=f"{SHOT}_w1.png")
     page.click("text=下一步")
 
-    # 3. step2 相機資料夾
-    page.wait_for_selector(".cam-row")
-    rows = page.locator(".cam-row")
+    # 3. step2 相機與版型編輯器
+    page.wait_for_selector(".layout-editor")
     need = len(CAM_FOLDERS)
-    while page.locator(".cam-row").count() < need:
+    while page.locator(".le-cards .flag-card").count() < need:
         page.click("text=＋ 新增相機")
     for i, (name, folder) in enumerate(CAM_FOLDERS):
-        row = page.locator(".cam-row").nth(i)
-        row.locator("input").nth(0).fill(name)
-        row.locator("input").nth(1).fill(folder)
+        card = page.locator(".le-cards .flag-card").nth(i)
+        card.locator("input.field").first.fill(name)
+        card.locator("button", has_text="資料夾").click()
+        page.wait_for_selector(".fs-dialog")
+        pinput = page.locator(".fs-pathrow input")
+        pinput.fill(folder)
+        pinput.press("Enter")
+        page.wait_for_timeout(500)
+        page.click("text=選擇此資料夾")
+        page.wait_for_timeout(300)
+    cells = page.locator(".le-cell.filled")
+    if cells.count() >= 2:
+        cells.nth(0).click()
+        cells.nth(1).click()
+        page.wait_for_timeout(400)
     page.screenshot(path=f"{SHOT}_w2.png")
 
     # 4. 對齊預覽（804 張，需一點時間）
@@ -164,7 +175,7 @@ with sync_playwright() as p:
 
     # ===== 修訂 R1：資訊面板 / 重新對齊 / 合併 / 原圖檢視 / 旋轉 =====
     page.keyboard.press("Escape")
-    page.click("text=資訊")
+    page.click(".siderail-tabs button >> nth=1")
     page.wait_for_selector(".info-drawer")
     drawer_txt = page.inner_text(".info-drawer")
     check("資訊面板開啟（含匯入報告）", "容差" in drawer_txt and "群組數" in drawer_txt)
@@ -174,7 +185,7 @@ with sync_playwright() as p:
     page.click("text=乾跑預覽")
     page.wait_for_selector(".realign-preview")
     pv = page.inner_text(".realign-preview")
-    check("重新對齊乾跑預覽", "新群組數" in pv)
+    check("重新對齊乾跑預覽", "→" in pv and "群組數" in pv)
     page.click("text=套用")
     page.wait_for_timeout(2000)
     drawer_txt2 = page.inner_text(".info-drawer")
@@ -208,14 +219,54 @@ with sync_playwright() as p:
     page.wait_for_timeout(1200)
     page.keyboard.press("Escape")
 
-    # 相機旋轉設定（資訊面板 → 相機）
-    page.click("text=資訊")
-    page.wait_for_selector(".info-drawer")
+    # 相機旋轉設定（資訊面板 → 相機版型編輯器 ⟳）
     page.click(".info-tab >> text=相機")
-    page.wait_for_selector(".flag-card select")
-    page.locator(".flag-card select").first.select_option("90")
+    page.wait_for_selector(".le-grid .le-rot")
+    page.locator(".le-grid .le-rot").first.click()
     page.wait_for_timeout(1000)
     check("相機旋轉設定無錯誤", len(errors) == 0)
+
+    # ===== 修訂 R2：版型編輯 / fit 切換 / 側欄三態 =====
+    # 相機頁籤已是版型編輯器：點選兩格交換
+    page.click(".info-tab >> text=相機")
+    page.wait_for_selector(".le-grid")
+    chips_before = page.locator(".le-cell .cam-chip").all_inner_texts()
+    filled = page.locator(".le-cell.filled")
+    filled.nth(0).click()
+    filled.nth(1).click()
+    page.wait_for_timeout(1200)
+    chips_after = page.locator(".le-cell .cam-chip").all_inner_texts()
+    check("版型交換生效", chips_before != chips_after, f"{chips_before}→{chips_after}")
+    check("操作 Toast 回饋", page.locator(".toast").count() > 0)
+
+    # 欄數切換持久化後重載驗證
+    page.select_option(".le-cols", "2")
+    page.wait_for_timeout(800)
+    page.reload()
+    page.wait_for_load_state("networkidle")
+    page.click(".tunnel-card")
+    page.wait_for_selector("img.tile-img.on", timeout=15000)
+    page.click(".siderail-tabs button >> nth=1")
+    page.wait_for_selector(".info-drawer")
+    page.click(".info-tab >> text=相機")
+    page.wait_for_selector(".info-drawer .le-cols")
+    cols_val = page.input_value(".info-drawer .le-cols")
+    check("欄數設定持久化", cols_val == "2", f"({cols_val})")
+
+    # 照片呈現模式切換
+    fit_btn = page.locator(".vtop button", has_text="完整")
+    fit_btn.click()
+    page.wait_for_timeout(200)
+    check("照片 fit 模式切換", page.locator(".vtop button", has_text="填滿").count() == 1)
+
+    # 側欄三態
+    rail = page.locator(".siderail")
+    rail.locator("button[title='收合']").click()
+    page.wait_for_timeout(200)
+    check("側欄收合", "mini" in (rail.get_attribute("class") or ""))
+    rail.locator("button[title='展開']").click()
+    page.wait_for_timeout(200)
+    check("側欄展開", "open" in (rail.get_attribute("class") or ""))
 
     check("無 JS 錯誤", len(errors) == 0, "; ".join(errors[:3]))
     browser.close()

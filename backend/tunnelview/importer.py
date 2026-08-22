@@ -22,6 +22,7 @@ class CameraInput:
     name: str
     folder: str
     rotation: int = 0
+    grid_pos: int = -1
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class ImportRequest:
     end_m: int
     tolerance_seconds: float
     cameras: list[CameraInput]
+    layout_cols: str | int = "auto"
 
 
 @dataclass(frozen=True)
@@ -174,10 +176,16 @@ class TunnelImporter:
             start_m=req.start_m,
             end_m=req.end_m,
             cameras=[
-                {"name": c.name, "root_path": c.folder, "rotation": c.rotation}
+                {
+                    "name": c.name,
+                    "root_path": c.folder,
+                    "rotation": c.rotation,
+                    "grid_pos": c.grid_pos,
+                }
                 for c in req.cameras
             ],
             tolerance_seconds=req.tolerance_seconds,
+            layout_cols=req.layout_cols,
         )
 
         est = compute_all(

@@ -14,6 +14,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from .db import Workspace
+from .fsutil import platform_roots
 from .interp import AnchorOrderError, AnchorRangeError
 from .importer import CameraInput, ImportRequest, TunnelImporter
 from .service import MergeConflict, TunnelService
@@ -23,6 +24,7 @@ class CameraBody(BaseModel):
     name: str
     folder: str
     rotation: int = 0
+    grid_pos: int = -1
 
 
 class ImportBody(BaseModel):
@@ -30,7 +32,16 @@ class ImportBody(BaseModel):
     start_m: int
     end_m: int
     tolerance_seconds: float = Field(gt=0)
+    layout_cols: str | int = "auto"
     cameras: list[CameraBody] = Field(min_length=1)
+
+
+class LayoutBody(BaseModel):
+    cols: str | int
+
+
+class FsRecentBody(BaseModel):
+    path: str
 
 
 class AnchorBody(BaseModel):
@@ -46,8 +57,9 @@ class MergeBody(BaseModel):
     keep: str | None = None
 
 
-class CameraRotationBody(BaseModel):
-    rotation: int
+class CameraUpdateBody(BaseModel):
+    rotation: int | None = None
+    grid_pos: int | None = None
 
 
 class PhotoRotationBody(BaseModel):
@@ -142,8 +154,9 @@ def create_app(workspace: Workspace) -> FastAPI:
             start_m=body.start_m,
             end_m=body.end_m,
             tolerance_seconds=body.tolerance_seconds,
+            layout_cols=body.layout_cols,
             cameras=[
-                CameraInput(name=c.name, folder=c.folder, rotation=c.rotation)
+                CameraInput(name=c.name, folder=c.folder, rotation=c.rotation, grid_pos=c.grid_pos)
                 for c in body.cameras
             ],
         )
@@ -163,6 +176,8 @@ def create_app(workspace: Workspace) -> FastAPI:
     @app.post("/api/tunnels")
     def create_tunnel(body: ImportBody):
         info = importer.commit(_to_req(body))
+        for cam in body.cameras:
+            workspace.add_recent_path(cam.folder)
         return {"tunnel_id": info.tunnel_id}
 
     @app.get("/api/tunnels/{tid}/meta")
@@ -228,7 +243,16 @@ def create_app(workspace: Workspace) -> FastAPI:
 
     @app.get("/api/fs/list")
     def fs_list(path: str = ""):
-        target = Path(path or "/").expanduser()
+        if not path.strip():
+            return {
+                "roots": platform_roots(),
+                "recent": workspace.get_recent_paths(),
+                "path": "",
+                "parent": None,
+                "dirs": [],
+                "sample": None,
+            }
+        target = Path(path).expanduser()
         if not target.is_dir():
             raise HTTPException(404, "資料夾不存在")
         entries = sorted(target.iterdir(), key=lambda x: x.name.lower())
@@ -242,6 +266,8 @@ def create_app(workspace: Workspace) -> FastAPI:
             "parent": str(target.parent) if target.parent != target else None,
             "dirs": dirs,
             "sample": sample,
+            "recent": workspace.get_recent_paths(),
+            "roots": platform_roots(),
         }
 
     @app.get("/api/fs/photo")
@@ -306,15 +332,39 @@ def create_app(workspace: Workspace) -> FastAPI:
         return result
 
     @app.put("/api/tunnels/{tid}/cameras/{seq}")
-    def set_camera_rotation(tid: int, seq: int, body: CameraRotationBody):
-        if body.rotation % 90 != 0 or not (0 <= body.rotation <= 270):
+    def update_camera(tid: int, seq: int, body: CameraUpdateBody):
+        if body.rotation is None and body.grid_pos is None:
+            raise HTTPException(400, "需提供 rotation 或 grid_pos")
+        if body.rotation is not None and (
+            body.rotation % 90 != 0 or not (0 <= body.rotation <= 270)
+        ):
             raise HTTPException(400, "旋轉角度僅接受 0/90/180/270")
         try:
-            service.set_camera_rotation(tid, seq, body.rotation)
+            if body.rotation is not None:
+                service.set_camera_rotation(tid, seq, body.rotation)
+            if body.grid_pos is not None:
+                service.set_camera_grid_pos(tid, seq, body.grid_pos)
         except KeyError:
             raise HTTPException(404, "相機不存在")
         _invalidate_cache(workspace.root, tid)
         hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
+        return {"ok": True}
+
+    @app.put("/api/tunnels/{tid}/layout")
+    def set_layout(tid: int, body: LayoutBody):
+        try:
+            service.set_layout_cols(tid, body.cols)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        hub.broadcast(tid, {"type": "layout_updated"})
+        return {"ok": True}
+
+    @app.post("/api/fs/recent")
+    def record_recent(body: FsRecentBody):
+        target = Path(body.path).expanduser()
+        if not target.is_dir():
+            raise HTTPException(404, "資料夾不存在")
+        workspace.add_recent_path(str(target))
         return {"ok": True}
 
     @app.put("/api/tunnels/{tid}/photos/{pid}/rotation")
@@ -328,6 +378,10 @@ def create_app(workspace: Workspace) -> FastAPI:
         _invalidate_cache(workspace.root, tid, photo_id=pid)
         hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
         return {"ok": True}
+
+    @app.get("/api/tunnels/{tid}/camera_thumbs")
+    def camera_thumbs(tid: int):
+        return service.camera_thumbs(tid)
 
     @app.get("/api/tunnels/{tid}/photos/{photo_id}")
     def photo(tid: int, photo_id: int, w: int | None = None):

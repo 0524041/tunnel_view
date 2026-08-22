@@ -308,3 +308,10 @@
   background: rgba(61, 214, 140, 0.14);
   color: var(--green);
 }
+
+.wizard-wide {
+  max-width: 1160px;
+}
+@media (min-width: 1600px) {
+  .wizard-wide { max-width: 1300px; }
+}

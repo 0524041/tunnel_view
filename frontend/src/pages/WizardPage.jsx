@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { api } from '../lib/api'
 import { parseMileage, formatMileage } from '../lib/mileage'
 import FsBrowser from '../components/FsBrowser'
+import LayoutEditor from '../components/LayoutEditor'
 
 export default function WizardPage({ onDone, onCancel }) {
   const [step, setStep] = useState(1)
@@ -9,31 +10,16 @@ export default function WizardPage({ onDone, onCancel }) {
   const [startText, setStartText] = useState('K23+000')
   const [endText, setEndText] = useState('')
   const [tolerance, setTolerance] = useState(2)
+  const [layoutCols, setLayoutCols] = useState('auto')
   const [cameras, setCameras] = useState([
-    { name: '頂拱左', folder: '' },
-    { name: '頂拱右', folder: '' },
+    { seq: 0, name: '頂拱左', folder: '', rotation: 0, grid_pos: -1 },
+    { seq: 1, name: '頂拱右', folder: '', rotation: 0, grid_pos: -1 },
   ])
+  const [thumbs, setThumbs] = useState({})
+  const [pickerFor, setPickerFor] = useState(null)
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [pickerFor, setPickerFor] = useState(null)
-  const [previews, setPreviews] = useState({})
-
-  const loadRowPreview = (i, folder) => {
-    if (!folder) return
-    api.fsList(folder).then((d) => {
-      setPreviews((ps) => ({
-        ...ps,
-        [i]: d.sample ? api.fsPhotoUrl(`${d.path}/${d.sample}`) : null,
-      }))
-    }).catch(() => setPreviews((ps) => ({ ...ps, [i]: null })))
-  }
-
-  const pickFolder = (i, pick) => {
-    setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, folder: pick.folder, rotation: pick.rotation } : c)))
-    loadRowPreview(i, pick.folder)
-    setPickerFor(null)
-  }
 
   const startM = parseMileage(startText)
   const endM = parseMileage(endText)
@@ -44,24 +30,44 @@ export default function WizardPage({ onDone, onCancel }) {
   const dirLabel =
     startM === null || endM === null ? '' : endM > startM ? '里程遞增 ⟶' : '⟵ 遞減里程'
 
-  const nextFrom1 = () => {
-    if (!step1Valid) return
-    setError('')
-    setStep(2)
+  const loadThumb = (seq, folder) => {
+    if (!folder) return
+    api.fsList(folder).then((d) => {
+      if (d.sample) {
+        setThumbs((t) => ({ ...t, [seq]: api.fsPhotoUrl(`${d.path}/${d.sample}`) }))
+      }
+    }).catch(() => {})
   }
 
-  async function runPreview() {
+  const handleEditorChange = ({ cameras: cams, cols }) => {
+    setCameras(cams)
+    setLayoutCols(cols)
+  }
+
+  const pickFolder = (i, pick) => {
+    setCameras((cs) =>
+      cs.map((c, j) =>
+        j === i ? { ...c, folder: pick.folder, rotation: pick.rotation } : c,
+      ),
+    )
+    loadThumb(cameras[i]?.seq ?? i, pick.folder)
+    setPickerFor(null)
+  }
+
+  const runPreview = async () => {
     setBusy(true)
     setError('')
     try {
-      const p = await api.previewImport({
-        name: name.trim(),
-        start_m: startM,
-        end_m: endM,
-        tolerance_seconds: tolerance,
-        cameras,
-      })
-      setPreview(p)
+      setPreview(
+        await api.previewImport({
+          name: name.trim(),
+          start_m: startM,
+          end_m: endM,
+          tolerance_seconds: tolerance,
+          layout_cols: layoutCols,
+          cameras,
+        }),
+      )
       setStep(3)
     } catch (e) {
       setError(e.message)
@@ -70,7 +76,7 @@ export default function WizardPage({ onDone, onCancel }) {
     }
   }
 
-  async function commit() {
+  const commit = async () => {
     setBusy(true)
     try {
       const r = await api.createTunnel({
@@ -78,6 +84,7 @@ export default function WizardPage({ onDone, onCancel }) {
         start_m: startM,
         end_m: endM,
         tolerance_seconds: tolerance,
+        layout_cols: layoutCols,
         cameras,
       })
       onDone(r.tunnel_id, name.trim())
@@ -88,11 +95,11 @@ export default function WizardPage({ onDone, onCancel }) {
   }
 
   return (
-    <div className="wizard">
+    <div className="wizard wizard-wide">
       <div className="wiz-head">
         <span className="display wiz-title">建立新隧道</span>
         <div className="wiz-steps mono">
-          {['基本設定', '相機資料夾', '對齊預覽'].map((s, i) => (
+          {['基本設定', '相機與版型', '對齊預覽'].map((s, i) => (
             <span key={s} className={`wstep ${step >= i + 1 ? 'on' : ''}`}>
               <b>{i + 1}</b> {s}
             </span>
@@ -130,15 +137,12 @@ export default function WizardPage({ onDone, onCancel }) {
               支援格式：<span className="mono">K23+150</span> /{' '}
               <span className="mono">23K+150</span> / <span className="mono">23+150</span> /{' '}
               <span className="mono">23150</span>。行進方向由起迄決定：
-              <b className={dirLabel.includes('遞減') ? 'mono' : 'mono'} style={{ color: 'var(--amber)' }}>
-                {' '}
-                {dirLabel || '—'}
-              </b>
+              <b className="mono" style={{ color: 'var(--amber)' }}> {dirLabel || '—'}</b>
             </p>
 
             <div className="wiz-actions">
               <button type="button" className="btn" onClick={onCancel}>取消</button>
-              <button type="button" className="btn primary" disabled={!step1Valid} onClick={nextFrom1}>下一步</button>
+              <button type="button" className="btn primary" disabled={!step1Valid} onClick={() => { setError(''); setStep(2) }}>下一步</button>
             </div>
           </section>
         )}
@@ -153,68 +157,46 @@ export default function WizardPage({ onDone, onCancel }) {
                 onClose={() => setPickerFor(null)}
               />
             )}
-            <p className="hint" style={{ marginBottom: 14 }}>
-              資料夾必須位於<b style={{ color: 'var(--text-hi)' }}>伺服器本機磁碟</b>，填入絕對路徑（照片原地引用，不會搬動）。
-            </p>
-            {cameras.map((cam, i) => (
-              <div className="cam-row" key={i}>
-                <input
-                  className="field cam-name"
-                  value={cam.name}
-                  placeholder={`視角 ${i + 1}`}
-                  onChange={(e) =>
-                    setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, name: e.target.value } : c)))
-                  }
-                />
-                <input
-                  className="field mono"
-                  value={cam.folder}
-                  placeholder="/data/Cam1 或 E:\Tunnel\Cam1"
-                  onChange={(e) =>
-                    setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, folder: e.target.value } : c)))
-                  }
-                  onBlur={() => loadRowPreview(i, cameras[i].folder)}
-                />
-                <button type="button" className="btn small" title="瀏覽選擇資料夾" onClick={() => setPickerFor(i)}>📁</button>
-                <select
-                  className="field mono cam-rot"
-                  value={cam.rotation ?? 0}
-                  title="機位旋轉（照片呈現方向）"
-                  onChange={(e) =>
-                    setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, rotation: parseInt(e.target.value) } : c)))
-                  }
-                >
-                  {[0, 90, 180, 270].map((r) => <option key={r} value={r}>{r}°</option>)}
-                </select>
-                <button
-                  type="button"
-                  className="btn danger small"
-                  disabled={cameras.length <= 1}
-                  onClick={() => setCameras((cs) => cs.filter((_, j) => j !== i))}
-                >移除</button>
-              </div>
-            ))}
-            {cameras.map((cam, i) =>
-              previews[i] ? (
-                <div className="wiz-prev" key={`pv-${i}`}>
-                  <span className="label">{cam.name} · 首張預覽</span>
-                  <img
-                    src={previews[i]}
-                    alt=""
-                    style={{ transform: `rotate(${cam.rotation ?? 0}deg)` }}
-                    className={(cam.rotation ?? 0) % 180 !== 0 ? 'rot90' : ''}
-                  />
-                </div>
-              ) : null,
-            )}
+
+            <LayoutEditor
+              tunnelId={null}
+              cameras={cameras}
+              thumbs={thumbs}
+              cols={layoutCols}
+              onChange={handleEditorChange}
+              onPickFolder={(i) => setPickerFor(i)}
+              onRemoveCamera={(seq) => {
+                setCameras((cs) => {
+                  const filtered = cs.filter((c) => c.seq !== seq)
+                  return filtered.map((c, j) => ({ ...c, seq: j, grid_pos: -1 }))
+                })
+              }}
+            />
             <button
               type="button"
               className="btn small"
+              style={{ marginTop: 10 }}
               disabled={cameras.length >= 8}
-              onClick={() => setCameras((cs) => [...cs, { name: `視角 ${cs.length + 1}`, folder: '' }])}
+              onClick={() =>
+                setCameras((cs) => [
+                  ...cs,
+                  { seq: cs.length, name: `視角 ${cs.length + 1}`, folder: '', rotation: 0, grid_pos: -1 },
+                ])
+              }
             >＋ 新增相機</button>
 
-            <div style={{ marginTop: 18, maxWidth: 220 }}>
+            {cameras.some((c) => c.folder) ? (
+              <p className="hint" style={{ marginTop: 10 }}>
+                已選資料夾的相機會顯示首張縮圖；拖曳或點選兩格可交換版型位置。
+                尚未選擇的相機以虛位顯示。
+              </p>
+            ) : (
+              <p className="hint" style={{ marginTop: 10 }}>
+                點擊下方「📁 資料夾」為每台相機選擇照片資料夾，縮圖會自動載入。
+              </p>
+            )}
+
+            <div style={{ marginTop: 14, maxWidth: 220 }}>
               <label className="label">時間容差（秒）</label>
               <input
                 type="number"
@@ -252,17 +234,13 @@ export default function WizardPage({ onDone, onCancel }) {
             </div>
 
             <table className="pv-table">
-              <thead>
-                <tr><th>相機視角</th><th>照片數</th><th>時間偏移 Δt</th></tr>
-              </thead>
+              <thead><tr><th>視角</th><th>張數</th><th>Δt</th></tr></thead>
               <tbody>
                 {preview.cameras.map((c, i) => (
                   <tr key={c.name}>
                     <td>{c.name}</td>
                     <td className="mono">{c.photo_count}</td>
-                    <td className="mono">
-                      {i === 0 ? <span className="chip amber">基準 0.00s</span> : `${c.offset_seconds >= 0 ? '+' : ''}${c.offset_seconds.toFixed(2)}s`}
-                    </td>
+                    <td className="mono">{i === 0 ? '基準' : `${c.offset_seconds >= 0 ? '+' : ''}${Number(c.offset_seconds).toFixed(2)}s`}</td>
                   </tr>
                 ))}
               </tbody>
@@ -271,16 +249,14 @@ export default function WizardPage({ onDone, onCancel }) {
             <div style={{ marginTop: 16 }}>
               <span className="label">缺照分佈（缺照台數 → 群組數）</span>
               <div className="dist-row">
-                {Object.entries(preview.missing_distribution).map(([missing, groups]) => (
-                  <span key={missing} className={`chip ${Number(missing) > 0 ? 'red' : 'blue'}`}>
-                    缺 {missing} 台 × {groups} 群
-                  </span>
+                {Object.entries(preview.missing_distribution).map(([m, n]) => (
+                  <span key={m} className={`chip ${Number(m) > 0 ? 'red' : 'blue'}`}>缺 {m} 台 × {n} 群</span>
                 ))}
               </div>
             </div>
 
             <p className="hint" style={{ marginTop: 14 }}>
-              初始推算里程將以等分建立：{formatMileage(startM)} ～ {formatMileage(endM)}。
+              初始推算里程：{formatMileage(startM)} ～ {formatMileage(endM)}。
               建立後可隨時輸入實體里程牌錨點即時修正。
             </p>
             {error && <p className="err-text">{error}</p>}

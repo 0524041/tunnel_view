@@ -1,8 +1,28 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import HomePage from './pages/HomePage'
 import WizardPage from './pages/WizardPage'
 import ViewerPage from './pages/ViewerPage'
+import { onToast } from './lib/toast'
 import './styles/App.css'
+
+function ToastHost() {
+  const [items, setItems] = useState([])
+  useEffect(
+    () =>
+      onToast((t) => {
+        setItems((xs) => [...xs, t])
+        setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== t.id)), 3000)
+      }),
+    [],
+  )
+  return (
+    <div className="toast-host">
+      {items.map((t) => (
+        <div key={t.id} className={`toast toast-${t.type}`}>{t.msg}</div>
+      ))}
+    </div>
+  )
+}
 
 export default function App() {
   const [tabs, setTabs] = useState([{ key: 'home' }])
@@ -75,6 +95,7 @@ export default function App() {
           </div>
         ))}
       </div>
+      <ToastHost />
     </div>
   )
 }

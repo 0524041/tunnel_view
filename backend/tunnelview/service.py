@@ -191,6 +191,20 @@ class TunnelService:
         finally:
             conn.close()
 
+    def camera_thumbs(self, tunnel_id: int) -> list[dict]:
+        """每台相機第一張有影像的照片 id（版型編輯器縮圖用）。"""
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            rows = conn.execute(
+                "SELECT c.seq AS camera_seq, MIN(p.id) AS photo_id "
+                "FROM photos p JOIN cameras c ON c.id = p.camera_id "
+                "WHERE COALESCE(p.manual_missing, 0) = 0 "
+                "GROUP BY c.seq ORDER BY c.seq"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def photo_file(self, tunnel_id: int, photo_id: int) -> Path:
         """解析照片絕對路徑：相機根路徑 + 相對路徑。"""
         return self.photo_render_info(tunnel_id, photo_id)["path"]
@@ -549,6 +563,47 @@ class TunnelService:
         finally:
             conn.close()
 
+    def set_camera_grid_pos(self, tunnel_id: int, camera_seq: int, grid_pos: int) -> None:
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "UPDATE cameras SET grid_pos = ? WHERE seq = ?", (grid_pos, camera_seq)
+                )
+                if cur.rowcount == 0:
+                    raise KeyError(camera_seq)
+        finally:
+            conn.close()
+
+    def set_layout_cols(self, tunnel_id: int, cols) -> None:
+        value = self._normalize_cols(cols)
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('layout_cols', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (value,),
+                )
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _normalize_cols(cols) -> str:
+        s = str(cols)
+        if s == "auto":
+            return "auto"
+        try:
+            n = int(s)
+        except ValueError:
+            raise ValueError("欄數必須為 auto 或 1–4")
+        if not 1 <= n <= 4:
+            raise ValueError("欄數必須為 auto 或 1–4")
+        return str(n)
+
+    def layout_cols(self, tunnel_id: int) -> str:
+        return self.ws.tunnel_meta(tunnel_id).get("layout_cols", "auto")
+
     def set_photo_rotation(self, tunnel_id: int, photo_id: int, angle: int) -> None:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
@@ -575,9 +630,13 @@ class TunnelService:
             cameras = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT seq, name, rotation FROM cameras ORDER BY seq"
+                    "SELECT seq, name, rotation, grid_pos FROM cameras ORDER BY seq"
                 ).fetchall()
             ]
+            layout_cols = conn.execute(
+                "SELECT value FROM meta WHERE key = 'layout_cols'"
+            ).fetchone()
+            layout_cols_val = layout_cols["value"] if layout_cols else "auto"
             flagged = [
                 dict(r)
                 for r in conn.execute(
@@ -621,6 +680,7 @@ class TunnelService:
             "name": m.get("tunnel_name", ""),
             "start_m": int(m["start_m"]),
             "end_m": int(m["end_m"]),
+            "layout_cols": layout_cols_val,
             "report": report,
             "cameras": cameras,
             "flagged": flagged,

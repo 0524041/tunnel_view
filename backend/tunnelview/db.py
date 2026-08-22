@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 _SCHEMA_TUNNEL = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS cameras (
     root_path TEXT NOT NULL,
     dt_offset_sec REAL NOT NULL DEFAULT 0.0,
     photo_count INTEGER NOT NULL DEFAULT 0,
-    rotation INTEGER NOT NULL DEFAULT 0 CHECK (rotation IN (0, 90, 180, 270))
+    rotation INTEGER NOT NULL DEFAULT 0 CHECK (rotation IN (0, 90, 180, 270)),
+    grid_pos INTEGER NOT NULL DEFAULT -1
 );
 
 CREATE TABLE IF NOT EXISTS photo_groups (
@@ -126,6 +127,15 @@ def migrate_if_needed(conn: sqlite3.Connection) -> None:
                     )
                     """
                 )
+            cam_cols2 = {r[1] for r in conn.execute("PRAGMA table_info(cameras)")}
+            if "grid_pos" not in cam_cols2:
+                conn.execute("ALTER TABLE cameras ADD COLUMN grid_pos INTEGER NOT NULL DEFAULT -1")
+                # 回填：舊資料以 seq 作為格位，保持既有順序
+                conn.execute("UPDATE cameras SET grid_pos = seq WHERE grid_pos < 0")
+            meta_keys = {r[0] for r in conn.execute("SELECT key FROM meta")}
+            if "layout_cols" not in meta_keys:
+                conn.execute("INSERT INTO meta (key, value) VALUES ('layout_cols', 'auto')")
+
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -206,7 +216,15 @@ class Workspace:
         self.root.mkdir(parents=True, exist_ok=True)
         with self._connect(self.index_path) as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS tunnels (id INTEGER PRIMARY KEY, name TEXT NOT NULL, db_filename TEXT NOT NULL UNIQUE, start_m INTEGER NOT NULL, end_m INTEGER NOT NULL, camera_count INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))")
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recent_paths (
+                path TEXT PRIMARY KEY,
+                used_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
 
     def _connect(self, path: Path) -> sqlite3.Connection:
         conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -234,6 +252,7 @@ class Workspace:
         end_m: int,
         cameras: list[dict],
         tolerance_seconds: float,
+        layout_cols: str | int = "auto",
     ) -> TunnelInfo:
         if not cameras:
             raise ValueError("至少需要一台相機")
@@ -255,11 +274,15 @@ class Workspace:
                     ("start_m", str(start_m)),
                     ("end_m", str(end_m)),
                     ("tolerance_seconds", str(tolerance_seconds)),
+                    ("layout_cols", str(layout_cols)),
                 ],
             )
             tconn.executemany(
-                "INSERT INTO cameras (seq, name, root_path, rotation) VALUES (?, ?, ?, ?)",
-                [(i, c["name"], c["root_path"], int(c.get("rotation", 0))) for i, c in enumerate(cameras)],
+                "INSERT INTO cameras (seq, name, root_path, rotation, grid_pos) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (i, c["name"], c["root_path"], int(c.get("rotation", 0)), int(c.get("grid_pos", -1)))
+                    for i, c in enumerate(cameras)
+                ],
             )
         return TunnelInfo(tunnel_id, name, db_filename, start_m, end_m, len(cameras))
 
@@ -288,6 +311,38 @@ class Workspace:
             p = Path(str(base) + suffix)
             if p.exists():
                 p.unlink()
+
+    def add_recent_path(self, path: str, limit: int = 8) -> None:
+        """記錄最近使用的相機資料夾；超出上限時淘汰最舊。
+
+        used_at 使用毫秒級時間戳——同一秒內的多次記錄才能保序。
+        """
+        with self._lock, self._connect(self.index_path) as conn:
+            now_ms = conn.execute(
+                "SELECT strftime('%Y-%m-%d %H:%M:%f', 'now')"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO recent_paths (path, used_at) VALUES (?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET used_at = excluded.used_at",
+                (path, now_ms),
+            )
+            conn.execute(
+                "DELETE FROM recent_paths WHERE path IN ("
+                "SELECT path FROM recent_paths ORDER BY used_at DESC, path LIMIT -1 OFFSET ?)",
+                (limit,),
+            )
+
+    def get_recent_paths(self, limit: int = 8) -> list[str]:
+        if not self.index_path.exists():
+            return []
+        with self._connect(self.index_path) as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT path FROM recent_paths ORDER BY used_at DESC, path LIMIT ?", (limit,)
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [r["path"] for r in rows]
 
     def set_camera_root(self, tunnel_id: int, camera_seq: int, root_path: str) -> None:
         """換機器／換硬碟時，重映射單一相機的根路徑。"""
