@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { resolveLayout } from '../lib/layout'
 
@@ -27,7 +27,7 @@ export default function CameraGrid({
       ? cameraMeta.map((c) => ({ ...c }))
       : cameras.map((name, seq) => ({ seq, name, grid_pos: -1, rotation: 0 }))
 
-  const { cells } = resolveLayout(meta, layoutCols)
+  const { colsNum, cells } = resolveLayout(meta, layoutCols)
 
   const renderCell = (cam, i) => {
     const name = cam?.name ?? ''
@@ -67,7 +67,7 @@ export default function CameraGrid({
   return (
     <div
       className={`cgrid fit-${fit}`}
-      style={{ gridTemplateColumns: `repeat(${cells.length > 0 ? Math.min(cells.length, 8) : 1}, minmax(0, 1fr))` }}
+      style={{ gridTemplateColumns: `repeat(${colsNum}, minmax(0, 1fr))` }}
     >
       {cells.map((cam, i) => renderCell(cam, i))}
     </div>
@@ -92,13 +92,22 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
     })
   }
 
-  const onWheel = (e) => {
-    e.preventDefault()
-    const rect = ref.current.getBoundingClientRect()
-    const px = (e.clientX - rect.left) / rect.width
-    const py = (e.clientY - rect.top) / rect.height
-    applyZoomAt(px, py, Math.exp(-e.deltaY * 0.0016))
-  }
+  const applyZoomAtRef = useRef(applyZoomAt)
+  applyZoomAtRef.current = applyZoomAt
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const handler = (e) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const px = (e.clientX - rect.left) / rect.width
+      const py = (e.clientY - rect.top) / rect.height
+      applyZoomAtRef.current(px, py, Math.exp(-e.deltaY * 0.0016))
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
 
   const onPointerDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -138,7 +147,6 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
     <div
       ref={ref}
       className={`tile ${flagged ? 'tile-flag' : ''}`}
-      onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -152,6 +160,7 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
         alt={name}
         draggable={false}
         onLoad={() => setLoaded(true)}
+        onError={() => setLoaded(true)}
         style={{
           objectFit: fit,
           transform: `translate(${view.nx * 100}%, ${view.ny * 100}%) scale(${view.s})`,

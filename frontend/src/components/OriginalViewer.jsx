@@ -10,17 +10,6 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
   const [version, setVersion] = useState(0)
   const containerRef = useRef(null)
   const dragRef = useRef(null)
-  const photo = photos[idx]
-
-  useEffect(() => {
-    setView({ z: 1, nx: 0, ny: 0 })
-    setAngleOverride(null)
-  }, [idx])
-
-  if (!photo) return null
-
-  const effAngle = (angleOverride ?? photo.rotation_override ?? photo.camera_rotation ?? 0) % 360
-  const noExif = photo.time_source === 'mtime'
 
   const applyZoomAt = (px, py, factor) => {
     setView((v) => {
@@ -33,13 +22,33 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
     })
   }
 
-  const onWheel = (e) => {
-    e.preventDefault()
-    const rect = containerRef.current.getBoundingClientRect()
-    const px = (e.clientX - rect.left) / rect.width
-    const py = (e.clientY - rect.top) / rect.height
-    applyZoomAt(px, py, Math.exp(-e.deltaY * 0.002))
-  }
+  const applyZoomAtRef = useRef(applyZoomAt)
+  applyZoomAtRef.current = applyZoomAt
+
+  useEffect(() => {
+    setView({ z: 1, nx: 0, ny: 0 })
+    setAngleOverride(null)
+  }, [idx])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const handler = (e) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const px = (e.clientX - rect.left) / rect.width
+      const py = (e.clientY - rect.top) / rect.height
+      applyZoomAtRef.current(px, py, Math.exp(-e.deltaY * 0.002))
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
+
+  const photo = photos[idx]
+  if (!photo) return null
+
+  const effAngle = (angleOverride ?? photo.rotation_override ?? photo.camera_rotation ?? 0) % 360
+  const noExif = photo.time_source === 'mtime'
 
   const onPointerDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -97,7 +106,6 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
       <div
         ref={containerRef}
         className="orig-stage"
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -109,7 +117,7 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
           alt=""
           draggable={false}
           style={{
-            transform: `translate(${view.nx * 100}%, ${view.ny * 100}%) scale(${view.z}) rotate(${effAngle}deg)`,
+            transform: `translate(${view.nx * 100}%, ${view.ny * 100}%) scale(${view.z})`,
             transformOrigin: '0 0',
           }}
         />
