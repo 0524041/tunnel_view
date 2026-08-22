@@ -5,9 +5,15 @@ import { formatMileage } from '../lib/mileage'
 export default function HomePage({ onOpenTunnel, onNewTunnel }) {
   const [tunnels, setTunnels] = useState(null)
 
+  const refresh = () => api.listTunnels().then(setTunnels).catch(() => {})
   useEffect(() => {
-    api.listTunnels().then(setTunnels).catch(() => setTunnels([]))
+    refresh()
   }, [])
+
+  const removeTunnel = (t) => {
+    if (!window.confirm(`確定刪除「${t.name}」？\n此操作會移除對齊資料與所有錨點，且無法復原（照片原檔不受影響）。`)) return
+    api.deleteTunnel(t.tunnel_id).then(refresh).catch((e) => alert(e.message))
+  }
 
   return (
     <div className="home">
@@ -50,7 +56,13 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
                 {formatMileage(t.start_m)} <span className="arrow">⟶</span> {formatMileage(t.end_m)}
               </div>
               <div className="tc-foot hint">
-                開啟檢視 <span className="mono">#{String(t.tunnel_id).padStart(3, '0')}</span>
+                <span>開啟檢視 <span className="mono">#{String(t.tunnel_id).padStart(3, '0')}</span></span>
+                <button
+                  type="button"
+                  className="btn danger small tc-del"
+                  title="刪除此隧道專案"
+                  onClick={(e) => { e.stopPropagation(); removeTunnel(t) }}
+                >🗑 刪除</button>
               </div>
             </button>
           ))}

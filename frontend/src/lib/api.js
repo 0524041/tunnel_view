@@ -64,6 +64,11 @@ export const api = {
 
   info: (tid) => fetch(`/api/tunnels/${tid}/info`).then(handle),
 
+  deleteTunnel: async (tid) => {
+    const r = await fetch(`/api/tunnels/${tid}`, { method: 'DELETE' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
   confirmFlag: async (tid, pid) => {
     const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/confirm_flag`, { method: 'POST' })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)

@@ -67,57 +67,86 @@ CREATE TABLE IF NOT EXISTS anchors (
 
 
 def migrate_if_needed(conn: sqlite3.Connection) -> None:
-    """隧道 db 開啟時的冪等升級：v1（group_seq 綁定）→ v2（載體照片綁定）。"""
-    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if row and row[0] == SCHEMA_VERSION:
+    """隧道 db 開啟時的冪等升級：v1（group_seq 綁定）→ v2（載體照片綁定）。
+
+    以 BEGIN IMMEDIATE 序列化：檢視器會並行發出多個請求、各自開連線，
+    沒有寫鎖時兩個連線會同時判定「欄位不存在」而互撞 duplicate column。
+    """
+    if _schema_version(conn) == SCHEMA_VERSION:
         return
 
-    with conn:
-        photo_cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
-        if "manual_missing" not in photo_cols:
-            conn.execute("ALTER TABLE photos ADD COLUMN manual_missing INTEGER NOT NULL DEFAULT 0")
-        if "width" not in photo_cols:
-            conn.execute("ALTER TABLE photos ADD COLUMN width INTEGER")
-        if "height" not in photo_cols:
-            conn.execute("ALTER TABLE photos ADD COLUMN height INTEGER")
-        if "rotation_override" not in photo_cols:
+    previous_isolation = conn.isolation_level
+    conn.isolation_level = None  # 手動控制交易邊界
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if _schema_version(conn) == SCHEMA_VERSION:
+                conn.execute("COMMIT")
+                return
+
+            photo_cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+            if "manual_missing" not in photo_cols:
+                conn.execute("ALTER TABLE photos ADD COLUMN manual_missing INTEGER NOT NULL DEFAULT 0")
+            if "width" not in photo_cols:
+                conn.execute("ALTER TABLE photos ADD COLUMN width INTEGER")
+            if "height" not in photo_cols:
+                conn.execute("ALTER TABLE photos ADD COLUMN height INTEGER")
+            if "rotation_override" not in photo_cols:
+                conn.execute(
+                    "ALTER TABLE photos ADD COLUMN rotation_override "
+                    "CHECK (rotation_override IN (0, 90, 180, 270))"
+                )
+            cam_cols = {r[1] for r in conn.execute("PRAGMA table_info(cameras)")}
+            if "rotation" not in cam_cols:
+                conn.execute(
+                    "ALTER TABLE cameras ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (rotation IN (0, 90, 180, 270))"
+                )
+            anchor_cols = {r[1] for r in conn.execute("PRAGMA table_info(anchors)")}
+            if anchor_cols and "carrier_photo_id" not in anchor_cols:
+                _migrate_anchors_v1_to_v2(conn)
+            elif not anchor_cols:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS anchors (
+                        id INTEGER PRIMARY KEY,
+                        carrier_photo_id INTEGER NOT NULL UNIQUE REFERENCES photos(id),
+                        mileage_m INTEGER NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    """
+                )
             conn.execute(
-                "ALTER TABLE photos ADD COLUMN rotation_override "
-                "CHECK (rotation_override IN (0, 90, 180, 270))"
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (SCHEMA_VERSION,),
             )
-        cam_cols = {r[1] for r in conn.execute("PRAGMA table_info(cameras)")}
-        if "rotation" not in cam_cols:
-            conn.execute(
-                "ALTER TABLE cameras ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0 "
-                "CHECK (rotation IN (0, 90, 180, 270))"
-            )
-        anchor_cols = {r[1] for r in conn.execute("PRAGMA table_info(anchors)")}
-        if anchor_cols and "carrier_photo_id" not in anchor_cols:
-            _migrate_anchors_v1_to_v2(conn)
-        elif not anchor_cols:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS anchors (
-                    id INTEGER PRIMARY KEY,
-                    carrier_photo_id INTEGER NOT NULL UNIQUE REFERENCES photos(id),
-                    mileage_m INTEGER NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-                """
-            )
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (SCHEMA_VERSION,),
-        )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.isolation_level = previous_isolation
+
+
+def _schema_version(conn: sqlite3.Connection) -> str | None:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None
 
 
 def _migrate_anchors_v1_to_v2(conn: sqlite3.Connection) -> None:
-    """舊錨點（group_seq 綁定）→ 載體照片綁定；載體＝該群組第一張照片。"""
+    """舊錨點（group_seq 綁定）→ 載體照片綁定；載體＝該群組第一張照片。
+
+    注意：不可用 executescript——它會隱式 COMMIT，拆毀外層 BEGIN IMMEDIATE 交易。
+    """
     old_rows = conn.execute("SELECT group_seq, mileage_m FROM anchors").fetchall()
     conn.execute("ALTER TABLE anchors RENAME TO anchors_old")
-    conn.executescript(
+    conn.execute(
         """
         CREATE TABLE anchors (
             id INTEGER PRIMARY KEY,
@@ -125,7 +154,7 @@ def _migrate_anchors_v1_to_v2(conn: sqlite3.Connection) -> None:
             mileage_m INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+        )
         """
     )
     for r in old_rows:
@@ -176,6 +205,7 @@ class Workspace:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def list_tunnels(self) -> list[TunnelInfo]:
@@ -238,6 +268,17 @@ class Workspace:
         row = self._tunnel_row(tunnel_id)
         with self._connect(self.root / row["db_filename"]) as tconn:
             return dict(tconn.execute("SELECT key, value FROM meta").fetchall())
+
+    def delete_tunnel(self, tunnel_id: int) -> None:
+        """刪除隧道：移除索引列並刪除 .db／-wal／-shm 檔。照片原檔不動。"""
+        row = self._tunnel_row(tunnel_id)
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute("DELETE FROM tunnels WHERE id = ?", (tunnel_id,))
+        base = self.root / row["db_filename"]
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(base) + suffix)
+            if p.exists():
+                p.unlink()
 
     def set_camera_root(self, tunnel_id: int, camera_seq: int, root_path: str) -> None:
         """換機器／換硬碟時，重映射單一相機的根路徑。"""

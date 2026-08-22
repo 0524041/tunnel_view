@@ -221,3 +221,7 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+
+.tc-del {
+  pointer-events: auto;
+}

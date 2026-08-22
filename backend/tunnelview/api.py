@@ -144,6 +144,14 @@ def create_app(workspace: Workspace) -> FastAPI:
             ],
         )
 
+    @app.delete("/api/tunnels/{tid}")
+    def remove_tunnel(tid: int):
+        try:
+            workspace.delete_tunnel(tid)
+        except KeyError:
+            raise HTTPException(404, "隧道不存在")
+        return {"ok": True}
+
     @app.post("/api/tunnels/preview")
     def preview_import(body: ImportBody):
         return importer.preview(_to_req(body))
