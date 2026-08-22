@@ -8,6 +8,7 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
   const [view, setView] = useState({ z: 1, nx: 0, ny: 0 })
   const [angleOverride, setAngleOverride] = useState(null)
   const [version, setVersion] = useState(0)
+  const [imgError, setImgError] = useState(null)
   const containerRef = useRef(null)
   const dragRef = useRef(null)
 
@@ -28,7 +29,13 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
   useEffect(() => {
     setView({ z: 1, nx: 0, ny: 0 })
     setAngleOverride(null)
+    setImgError(null)
   }, [idx])
+
+  useEffect(() => {
+    setView({ z: 1, nx: 0, ny: 0 })
+    setImgError(null)
+  }, [version, angleOverride])
 
   useEffect(() => {
     const el = containerRef.current
@@ -116,11 +123,21 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
           src={`${api.photoUrl(tunnelId, photo.photo_id)}?cr=${photo.camera_rotation ?? 0}&pr=${angleOverride ?? photo.rotation_override ?? -1}&v=${version}`}
           alt=""
           draggable={false}
+          onError={(e) => {
+            const msg = `載入失敗: ${e?.target?.src?.slice(0, 80)}`
+            setImgError(msg)
+          }}
+          onLoad={() => setImgError(null)}
           style={{
             transform: `translate(${view.nx * 100}%, ${view.ny * 100}%) scale(${view.z})`,
             transformOrigin: '0 0',
           }}
         />
+        {imgError && (
+          <div style={{ position:'absolute', inset:0, display:'grid', placeItems:'center', background:'rgba(0,0,0,0.6)', color:'#ff4d4f', fontSize:13, padding:16, textAlign:'center' }}>
+            {imgError}<br /><span style={{color:'#aaa', fontSize:11}}>請檢查網路或稍後重試（R 再轉一次可重載）</span>
+          </div>
+        )}
       </div>
 
       <div className="orig-exif mono">
