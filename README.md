@@ -86,12 +86,42 @@ uv --version  # 驗證
 cd frontend && npm install && npm run build
 ```
 
+### 快取與重啟
+
+| 快取 | 位置 | 說明 | 刪除方式 |
+|---|---|---|---|
+| 圖片縮圖 | `$TUNNELVIEW_HOME/.thumb_cache`（預設 `data/.thumb_cache`） | 動態縮圖（`w=1600` / 原圖旋轉後），可安全刪除，下次瀏覽自動重建 | `rm -rf data/.thumb_cache` 或一鍵指令 |
+| uv 下載快取 | `~/.cache/uv`（Linux）/ `~/Library/Caches/uv`（macOS）/ `%LOCALAPPDATA%\uv\cache`（Windows） | `uv` 下載的 wheel 與 Python 版本 | `uv cache clean` |
+
+```bash
+# 正常啟動 / 重啟（不清除快取）
+./run.sh
+./run.sh restart
+run.bat
+run.bat restart
+
+# 單獨清除快取（縮圖異常、旋轉後仍顯示舊圖時使用）
+./run.sh clear-cache
+run.bat clear-cache
+
+# 完全重置：圖片快取 + uv 快取（磁碟空間不足時使用，下次啟動會重新下載）
+./run.sh clean
+run.bat clean
+
+# 查看說明
+./run.sh --help
+```
+
 ### 手動啟動（不等於一鍵腳本）
 
 ```bash
 uv sync                  # 同步依賴（自動下載 Python）
 uv run python server.py  # 啟動服務
 uv run pytest backend/tests/ -q  # 測試
+
+# 手動清快取
+rm -rf data/.thumb_cache          # 圖片快取
+uv cache clean                    # uv 快取（或 uv cache prune）
 ```
 
 ## 使用流程
