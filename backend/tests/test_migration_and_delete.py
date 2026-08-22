@@ -67,8 +67,9 @@ class TestConcurrentMigration:
         assert errors == []
         conn = ws.open_tunnel(1)
         try:
+            from tunnelview.anchor_model import SCHEMA_VERSION
             ver = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-            assert ver == "2"
+            assert ver == SCHEMA_VERSION
             mileage = conn.execute("SELECT mileage_m FROM anchors").fetchone()["mileage_m"]
             assert mileage == 777
         finally:

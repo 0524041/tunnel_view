@@ -6,6 +6,7 @@ const clampF = (f) => Math.max(-3, Math.min(3, f))
 export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }) {
   const [idx, setIdx] = useState(startIndex)
   const [view, setView] = useState({ z: 1, nx: 0, ny: 0 })
+  const [angleOverride, setAngleOverride] = useState(null)
   const [version, setVersion] = useState(0)
   const containerRef = useRef(null)
   const dragRef = useRef(null)
@@ -13,9 +14,13 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
 
   useEffect(() => {
     setView({ z: 1, nx: 0, ny: 0 })
+    setAngleOverride(null)
   }, [idx])
 
-  const effAngle = (photo?.rotation_override ?? photo?.camera_rotation ?? 0) % 360
+  if (!photo) return null
+
+  const effAngle = (angleOverride ?? photo.rotation_override ?? photo.camera_rotation ?? 0) % 360
+  const noExif = photo.time_source === 'mtime'
 
   const applyZoomAt = (px, py, factor) => {
     setView((v) => {
@@ -24,9 +29,7 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
       const k = z2 / v.z
       let nx = px - k * (px - v.nx)
       let ny = py - k * (py - v.ny)
-      nx = clampF(nx)
-      ny = clampF(ny)
-      return { z: z2, nx, ny }
+      return { z: z2, nx: clampF(nx), ny: clampF(ny) }
     })
   }
 
@@ -40,7 +43,7 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
 
   const onPointerDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId)
-    dragRef.current = { x: e.clientX, y: e.clientY, start: view, moved: false }
+    dragRef.current = { x: e.clientX, y: e.clientY, start: view }
   }
 
   const onPointerMove = (e) => {
@@ -48,8 +51,11 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
     if (!d) return
     const dx = (e.clientX - d.x) / containerRef.current.clientWidth
     const dy = (e.clientY - d.y) / containerRef.current.clientHeight
-    if (Math.abs(dx) + Math.abs(dy) > 0.005) d.moved = true
     setView({ z: d.start.z, nx: clampF(d.start.nx + dx), ny: clampF(d.start.ny + dy) })
+  }
+
+  const onPointerUp = () => {
+    dragRef.current = null
   }
 
   const cyclePhoto = (d) => {
@@ -57,8 +63,14 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
   }
 
   const rotateCurrent = () => {
-    const next = ((photo.rotation_override ?? photo.camera_rotation ?? 0) + 90) % 360
-    api.setPhotoRotation(tunnelId, photo.photo_id, next).then(() => setVersion((v) => v + 1))
+    const next = (effAngle + 90) % 360
+    api
+      .setPhotoRotation(tunnelId, photo.photo_id, next)
+      .then(() => {
+        setAngleOverride(next)
+        setVersion((v) => v + 1)
+      })
+      .catch(() => {})
   }
 
   const onKeyDown = (e) => {
@@ -74,37 +86,43 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose }
   return (
     <div className="orig-overlay" onKeyDown={onKeyDown} tabIndex={-1}>
       <div className="orig-head mono">
-        <span>{photo ? `${photo.__cameraName} · 群組 #${String(photo.__groupSeq + 1).padStart(4, '0')}` : ''}</span>
-        <span className="hint">{Math.round(view.z * 100)}% · 原始解析度</span>
+        <span className="list-main">{photo.rel_path}</span>
+        <span className="chip blue">{Math.round(view.z * 100)}%</span>
         <div className="row-actions">
           <button type="button" className="btn small" onClick={rotateCurrent}>⟳ 旋轉（R）</button>
           <button type="button" className="btn small" onClick={onClose}>關閉（Esc）</button>
         </div>
       </div>
+
       <div
         ref={containerRef}
         className="orig-stage"
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={() => {
-          dragRef.current = null
-        }}
+        onPointerUp={onPointerUp}
         onDoubleClick={() => setView((v) => (v.z === 1 ? { z: 2, nx: 0, ny: 0 } : { z: 1, nx: 0, ny: 0 }))}
       >
-        {photo && (
-          <img
-            key={`${photo.photo_id}-${version}`}
-            src={`${api.photoUrl(tunnelId, photo.photo_id)}?v=${effAngle}-${version}`}
-            alt=""
-            draggable={false}
-            style={{
-              transform: `translate(${view.nx * 100}%, ${view.ny * 100}%) scale(${view.z}) rotate(${effAngle}deg)`,
-              transformOrigin: '0 0',
-            }}
-          />
-        )}
+        <img
+          key={`${photo.photo_id}-${version}`}
+          src={`${api.photoUrl(tunnelId, photo.photo_id)}?cr=${photo.camera_rotation ?? 0}&pr=${angleOverride ?? photo.rotation_override ?? -1}&v=${version}`}
+          alt=""
+          draggable={false}
+          style={{
+            transform: `translate(${view.nx * 100}%, ${view.ny * 100}%) scale(${view.z}) rotate(${effAngle}deg)`,
+            transformOrigin: '0 0',
+          }}
+        />
       </div>
+
+      <div className="orig-exif mono">
+        <span className={`chip ${noExif ? 'red' : 'blue'}`}>{noExif ? '⚠ 無 EXIF（檔案時間）' : 'EXIF'}</span>
+        <span>原始：{photo.exif_time || '—'}</span>
+        <span className="arrow">→</span>
+        <span className="hl">對齊：{photo.corrected_time || '—'}</span>
+        <span className="hint">{`群組 #${String(photo.__groupSeq + 1).padStart(4, '0')} · ${photo.__cameraName}`}</span>
+      </div>
+
       <div className="orig-foot hint">
         滾輪縮放 · 拖曳平移 · 雙擊 100%／適合 · Tab 切換視角 · R 旋轉 · Esc 關閉
       </div>

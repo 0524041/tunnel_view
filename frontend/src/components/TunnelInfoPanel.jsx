@@ -4,7 +4,7 @@ import { formatMileage } from '../lib/mileage'
 
 const ROT_OPTIONS = [0, 90, 180, 270]
 
-export default function TunnelInfoPanel({ tunnelId, info, onJump, onChanged }) {
+export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onChanged }) {
   const [tab, setTab] = useState('report')
   const [tolerance, setTolerance] = useState(null)
   const [preview, setPreview] = useState(null)
@@ -15,6 +15,22 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onChanged }) {
 
   const report = info.report || {}
   const currentTol = tolerance ?? report.tolerance_seconds ?? 2.0
+
+  const actFlag = async (index, result) => {
+    setBusy(true)
+    setError('')
+    try {
+      await api.reviewPhoto(tunnelId, info.flagged[index].photo_id, result)
+      const next = info.flagged.find((f, j) => j !== index)
+      onChanged?.()
+      if (next?.group_seq != null) onJumpSeq?.(next.group_seq)
+      else if (info.flagged[index]?.group_seq != null) onJumpSeq?.(info.flagged[index].group_seq)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const runPreview = async () => {
     setBusy(true)
@@ -46,9 +62,9 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onChanged }) {
     <aside className="drawer info-drawer">
       <div className="info-tabs">
         {[
-          ['report', `報告`],
+          ['report', '報告'],
           ['flagged', `待檢查 ${info.flagged.length || ''}`],
-          ['missing', `已改判 ${info.manual_missing.length || ''}`],
+          ['reviewed', `人工檢查 ${info.reviewed.length || ''}`],
           ['cams', '相機'],
         ].map(([k, label]) => (
           <button type="button" key={k} className={`info-tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>
@@ -151,37 +167,60 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onChanged }) {
         {tab === 'flagged' && (
           <>
             {info.flagged.length === 0 && <p className="hint drawer-empty">目前沒有待檢查照片。</p>}
-            {info.flagged.map((f) => (
+            {info.flagged.map((f, i) => (
               <div key={f.photo_id} className="panel flag-card">
                 <div className="mono list-main">{f.camera} · {f.rel_path}</div>
-                <span className="chip amber">{f.reason}</span>
+                <span className="chip amber">{f.reason}{f.group_seq != null ? ` · 群組 #${String(f.group_seq + 1).padStart(4, '0')}` : ''}</span>
                 <div className="row-actions">
-                  <button type="button" className="btn small" onClick={() => onJump?.('flag', f)}>🔍 檢閱</button>
-                  <button type="button" className="btn small" onClick={() => api.confirmFlag(tunnelId, f.photo_id).then(onChanged)}>✅ 無誤</button>
-                  <button
-                    type="button"
-                    className="btn danger small"
-                    onClick={() => api.markMissing(tunnelId, f.photo_id).then(() => { onChanged?.(); onJump?.('refresh') })}
-                  >⛔ 改判缺照</button>
+                  <button type="button" className="btn small" onClick={() => f.group_seq != null && onJumpSeq?.(f.group_seq)}>
+                    📍 跳轉預覽
+                  </button>
+                  <button type="button" className="btn small" disabled={busy} onClick={() => actFlag(i, 'ok')}>✅ 檢查OK</button>
+                  <button type="button" className="btn danger small" disabled={busy} onClick={() => actFlag(i, 'anomaly')}>🚩 標注異常</button>
                 </div>
               </div>
             ))}
           </>
         )}
 
-        {tab === 'missing' && (
+        {tab === 'reviewed' && (
           <>
-            {info.manual_missing.length === 0 && <p className="hint drawer-empty">沒有改判缺照的照片。</p>}
-            {info.manual_missing.map((f) => (
-              <div key={f.photo_id} className="panel flag-card">
-                <div className="mono list-main">{f.camera} · {f.rel_path}</div>
-                <button
-                  type="button"
-                  className="btn small"
-                  onClick={() => api.restorePhoto(tunnelId, f.photo_id).then(onChanged)}
-                >↩ 復原</button>
+            {info.reviewed.length === 0 && info.manual_missing.length === 0 && (
+              <p className="hint drawer-empty">尚無人工檢查紀錄。</p>
+            )}
+            {info.reviewed.map((r) => (
+              <div key={`rv-${r.photo_id}`} className="panel flag-card">
+                <div className="mono list-main">{r.camera} · {r.rel_path}</div>
+                <div className="row-actions">
+                  <span className={`chip ${r.result === 'ok' ? 'green-chip' : 'red'}`}>
+                    {r.result === 'ok' ? '✅ 檢查OK' : '🚩 已標注異常'}
+                  </span>
+                  {r.group_seq != null && (
+                    <button type="button" className="btn small" onClick={() => onJumpSeq?.(r.group_seq)}>📍</button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn small"
+                    title="撤銷結論，回到待檢查"
+                    onClick={() => api.resetReview(tunnelId, r.photo_id).then(onChanged)}
+                  >↩</button>
+                </div>
               </div>
             ))}
+            {info.manual_missing.length > 0 && (
+              <Section title="合併時改判缺照">
+                {info.manual_missing.map((f) => (
+                  <div key={`mm-${f.photo_id}`} className="panel flag-card">
+                    <div className="mono list-main">{f.camera} · {f.rel_path}</div>
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() => api.restorePhoto(tunnelId, f.photo_id).then(onChanged)}
+                    >↩ 復原</button>
+                  </div>
+                ))}
+              </Section>
+            )}
           </>
         )}
 

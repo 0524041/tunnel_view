@@ -19,6 +19,7 @@ from .anchor_model import (
     _recompute_missing_counts,
 )
 from .db import Workspace
+from .importer import compute_aspect_anomalies
 from .interp import AnchorOrderError, AnchorRangeError, check_anchor, compute_all
 
 __all__ = ["TunnelService", "AnchorOrderError", "AnchorRangeError", "MergeConflict"]
@@ -63,6 +64,15 @@ class TunnelService:
         try:
             cams = [r["name"] for r in conn.execute("SELECT name FROM cameras ORDER BY seq").fetchall()]
             anchored = set(self._resolved_anchors(conn))
+            anomaly_counts = {
+                r["seq"]: r["n"]
+                for r in conn.execute(
+                    "SELECT g.seq AS seq, COUNT(*) AS n FROM photos p "
+                    "JOIN photo_groups g ON g.id = p.group_id "
+                    "WHERE p.aspect_anomaly = 1 AND COALESCE(p.manual_missing, 0) = 0 "
+                    "GROUP BY g.seq"
+                ).fetchall()
+            }
             rows = conn.execute(
                 "SELECT seq, est_mileage_m, missing_count FROM photo_groups ORDER BY seq"
             ).fetchall()
@@ -80,6 +90,7 @@ class TunnelService:
                 "est": [r["est_mileage_m"] for r in rows],
                 "missing": [r["missing_count"] for r in rows],
                 "anchored": [r["seq"] in anchored for r in rows],
+                "anomaly": [anomaly_counts.get(r["seq"], 0) for r in rows],
             },
         }
 
@@ -99,6 +110,7 @@ class TunnelService:
                 photos = conn.execute(
                     "SELECT p.id AS photo_id, c.seq AS camera_seq, p.rel_path, p.flagged, "
                     "p.width, p.height, p.rotation_override AS rotation_override, c.rotation AS camera_rotation, "
+                    "p.exif_time, p.corrected_time, p.time_source, p.aspect_anomaly, "
                     "(p.width IS NOT NULL AND p.height IS NOT NULL) AS has_dims "
                     "FROM photos p JOIN cameras c ON c.id = p.camera_id "
                     "WHERE p.group_id = ? AND COALESCE(p.manual_missing, 0) = 0 ORDER BY c.seq",
@@ -222,6 +234,44 @@ class TunnelService:
         finally:
             conn.close()
 
+    def review_photo(self, tunnel_id: int, photo_id: int, result: str) -> dict:
+        """人工複核結論：'ok' 清除旗標；'anomaly' 標記確認異常。回傳所在群組 seq。"""
+        if result not in ("ok", "anomaly"):
+            raise ValueError("result 必須為 ok 或 anomaly")
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                row = conn.execute(
+                    "UPDATE photos SET review_result = ?, flagged = 0 WHERE id = ? "
+                    "AND COALESCE(manual_missing, 0) = 0",
+                    (result, photo_id),
+                )
+                if row.rowcount == 0:
+                    raise KeyError(photo_id)
+                seq_row = conn.execute(
+                    "SELECT g.seq AS seq FROM photos p JOIN photo_groups g ON g.id = p.group_id "
+                    "WHERE p.id = ?",
+                    (photo_id,),
+                ).fetchone()
+            return {"group_seq": seq_row["seq"] if seq_row else None}
+        finally:
+            conn.close()
+
+    def reset_review(self, tunnel_id: int, photo_id: int) -> None:
+        """撤銷人工複核結論，回到待檢查狀態。"""
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                row = conn.execute(
+                    "UPDATE photos SET review_result = NULL, flagged = 1 "
+                    "WHERE id = ? AND review_result IS NOT NULL",
+                    (photo_id,),
+                )
+                if row.rowcount == 0:
+                    raise KeyError(photo_id)
+        finally:
+            conn.close()
+
     def mark_missing_photo(self, tunnel_id: int, photo_id: int) -> None:
         info = self.meta(tunnel_id)
         conn = self.ws.open_tunnel(tunnel_id)
@@ -340,6 +390,7 @@ class TunnelService:
                             flagged_n += 1
 
                 _recompute_missing_counts(conn)
+                compute_aspect_anomalies(conn)
                 existing = self._resolved_anchors(conn)
                 self._recompute(
                     conn,
@@ -530,10 +581,21 @@ class TunnelService:
             flagged = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT p.id AS photo_id, c.name AS camera, p.rel_path, p.exif_time, "
+                    "SELECT p.id AS photo_id, c.name AS camera, p.rel_path, p.exif_time, g.seq AS group_seq, "
                     "CASE WHEN p.time_source = 'mtime' THEN 'exif缺漏' ELSE '對齊殘差' END AS reason "
                     "FROM photos p JOIN cameras c ON c.id = p.camera_id "
-                    "WHERE p.flagged = 1 AND COALESCE(p.manual_missing, 0) = 0"
+                    "LEFT JOIN photo_groups g ON g.id = p.group_id "
+                    "WHERE p.flagged = 1 AND p.review_result IS NULL AND COALESCE(p.manual_missing, 0) = 0"
+                ).fetchall()
+            ]
+            reviewed = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT p.id AS photo_id, c.name AS camera, p.rel_path, g.seq AS group_seq, "
+                    "p.review_result AS result "
+                    "FROM photos p JOIN cameras c ON c.id = p.camera_id "
+                    "LEFT JOIN photo_groups g ON g.id = p.group_id "
+                    "WHERE p.review_result IS NOT NULL"
                 ).fetchall()
             ]
             manual_missing = [
@@ -562,6 +624,7 @@ class TunnelService:
             "report": report,
             "cameras": cameras,
             "flagged": flagged,
+            "reviewed": reviewed,
             "manual_missing": manual_missing,
             "rotation_overrides": rotation_overrides,
             "dangling_anchors": dangling,

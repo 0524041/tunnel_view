@@ -111,10 +111,10 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
     })
   }
 
-  const onPointerUp = (e) => {
+  const onPointerUp = () => {
     const wasMoved = dragRef.current?.moved
     dragRef.current = null
-    if (!wasMoved && view.s === 1 && onOpenOriginal) {
+    if (!wasMoved && onOpenOriginal) {
       onOpenOriginal(photo)
     }
   }
@@ -135,7 +135,7 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
       {!loaded && <div className="tile-spin"><div className="spin" /></div>}
       <img
         className={`tile-img ${loaded ? 'on' : ''}`}
-        src={api.photoUrl(tunnelId, photo.photo_id, 1600)}
+        src={api.photoUrl(tunnelId, photo.photo_id, 1600, photo)}
         alt={name}
         draggable={false}
         onLoad={() => setLoaded(true)}

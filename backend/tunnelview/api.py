@@ -54,6 +54,10 @@ class PhotoRotationBody(BaseModel):
     angle: int
 
 
+class ReviewBody(BaseModel):
+    result: str
+
+
 def _needs_exif_transpose(path: Path) -> bool:
     try:
         with Image.open(path) as im:
@@ -201,6 +205,51 @@ def create_app(workspace: Workspace) -> FastAPI:
             raise HTTPException(404, "錨點不存在")
         hub.broadcast(tid, {"type": "anchor_delete", "group_seq": seq})
         return {"ok": True}
+
+    @app.post("/api/tunnels/{tid}/photos/{pid}/review")
+    def review_photo(tid: int, pid: int, body: ReviewBody):
+        try:
+            result = service.review_photo(tid, pid, body.result)
+        except KeyError:
+            raise HTTPException(404, "照片不存在")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        return result
+
+    @app.post("/api/tunnels/{tid}/photos/{pid}/reset_review")
+    def reset_review(tid: int, pid: int):
+        try:
+            service.reset_review(tid, pid)
+        except KeyError:
+            raise HTTPException(404, "照片沒有待撤銷的複核結論")
+        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        return {"ok": True}
+
+    @app.get("/api/fs/list")
+    def fs_list(path: str = ""):
+        target = Path(path or "/").expanduser()
+        if not target.is_dir():
+            raise HTTPException(404, "資料夾不存在")
+        entries = sorted(target.iterdir(), key=lambda x: x.name.lower())
+        dirs = [e.name for e in entries if e.is_dir() and not e.name.startswith(".")]
+        sample = next(
+            (e.name for e in entries if e.is_file() and e.suffix.lower() in {".jpg", ".jpeg"}),
+            None,
+        )
+        return {
+            "path": str(target),
+            "parent": str(target.parent) if target.parent != target else None,
+            "dirs": dirs,
+            "sample": sample,
+        }
+
+    @app.get("/api/fs/photo")
+    def fs_photo(path: str):
+        f = Path(path).expanduser()
+        if not f.is_file() or f.suffix.lower() not in {".jpg", ".jpeg"}:
+            raise HTTPException(404, "照片不存在")
+        return FileResponse(f, media_type="image/jpeg")
 
     @app.get("/api/tunnels/{tid}/info")
     def tunnel_info(tid: int):

@@ -225,3 +225,86 @@
 .tc-del {
   pointer-events: auto;
 }
+
+.fs-dialog {
+  width: 760px;
+  max-width: calc(100vw - 40px);
+}
+.fs-pathrow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.fs-main {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 14px;
+  min-height: 260px;
+}
+.fs-dirs {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg0);
+  padding: 4px;
+}
+.fs-dir {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.fs-dir:hover {
+  background: var(--bg3);
+  color: var(--text-hi);
+}
+.fs-preview {
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+}
+.fs-prevbox {
+  display: grid;
+  place-items: center;
+  background: #000;
+  border-radius: 4px;
+  min-height: 160px;
+  overflow: hidden;
+}
+.fs-prevbox img {
+  max-width: 200px;
+  max-height: 150px;
+  object-fit: contain;
+  transition: transform 0.15s;
+}
+.rot90 {
+  transform-origin: center;
+}
+.wiz-prev {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wiz-prev .label {
+  margin: 0;
+  white-space: nowrap;
+}
+.wiz-prev img {
+  height: 64px;
+  max-width: 120px;
+  object-fit: cover;
+  border-radius: 4px;
+  transition: transform 0.15s;
+}
+.green-chip {
+  border-color: transparent;
+  background: rgba(61, 214, 140, 0.14);
+  color: var(--green);
+}

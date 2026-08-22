@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 _SCHEMA_TUNNEL = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS photos (
     width INTEGER,
     height INTEGER,
     manual_missing INTEGER NOT NULL DEFAULT 0,
-    rotation_override INTEGER CHECK (rotation_override IN (0, 90, 180, 270))
+    rotation_override INTEGER CHECK (rotation_override IN (0, 90, 180, 270)),
+    review_result TEXT CHECK (review_result IN ('ok', 'anomaly')),
+    aspect_anomaly INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_photos_group ON photos(group_id);
 CREATE INDEX IF NOT EXISTS idx_photos_camera ON photos(camera_id);
@@ -96,6 +98,13 @@ def migrate_if_needed(conn: sqlite3.Connection) -> None:
                     "ALTER TABLE photos ADD COLUMN rotation_override "
                     "CHECK (rotation_override IN (0, 90, 180, 270))"
                 )
+            if "review_result" not in photo_cols:
+                conn.execute(
+                    "ALTER TABLE photos ADD COLUMN review_result TEXT "
+                    "CHECK (review_result IN ('ok', 'anomaly'))"
+                )
+            if "aspect_anomaly" not in photo_cols:
+                conn.execute("ALTER TABLE photos ADD COLUMN aspect_anomaly INTEGER NOT NULL DEFAULT 0")
             cam_cols = {r[1] for r in conn.execute("PRAGMA table_info(cameras)")}
             if "rotation" not in cam_cols:
                 conn.execute(

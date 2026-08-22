@@ -462,3 +462,30 @@ kbd {
   background: var(--bg1);
   flex: none;
 }
+
+.legend-diamond {
+  width: 7px;
+  height: 7px;
+  display: inline-block;
+  background: #ffb300;
+  transform: rotate(45deg);
+}
+
+.orig-exif {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  background: var(--bg1);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--text);
+  flex: none;
+}
+.orig-exif .arrow {
+  color: var(--amber);
+}
+.orig-exif .hl {
+  color: var(--amber);
+}

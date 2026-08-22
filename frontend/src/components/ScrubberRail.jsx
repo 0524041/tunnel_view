@@ -10,7 +10,7 @@ function niceStep(rawSteps) {
   return 10 * mag
 }
 
-export default function ScrubberRail({ est, missing, anchored, current, onJump }) {
+export default function ScrubberRail({ est, missing, anchored, anomaly, current, onJump }) {
   const canvasRef = useRef(null)
   const wrapRef = useRef(null)
   const n = est?.length ?? 0
@@ -93,6 +93,16 @@ export default function ScrubberRail({ est, missing, anchored, current, onJump }
       if (missing[i] > 0) {
         ctx.fillStyle = '#ff4d4f'
         ctx.fillRect(x - 1, 8, 2.5, 9)
+      }
+      if (anomaly?.[i] > 0) {
+        ctx.fillStyle = '#ffb300'
+        ctx.beginPath()
+        ctx.moveTo(x, 20)
+        ctx.lineTo(x - 4, 25)
+        ctx.lineTo(x, 30)
+        ctx.lineTo(x + 4, 25)
+        ctx.closePath()
+        ctx.fill()
       }
       if (anchored[i]) {
         ctx.fillStyle = '#4fa3ff'
@@ -179,6 +189,7 @@ export default function ScrubberRail({ est, missing, anchored, current, onJump }
       <div className="rail-legend">
         <span><i style={{ background: '#4fa3ff' }} /> 錨點</span>
         <span><i style={{ background: '#ff4d4f' }} /> 缺照</span>
+        <span><i className="legend-diamond" /> 比例異常</span>
         <span><i style={{ background: '#ffb300' }} /> 當前位置</span>
         <em className="hint">滾輪縮放 · 拖曳平移 · 點擊跳轉</em>
       </div>

@@ -216,6 +216,7 @@ export default function ViewerPage({ tunnelId, active }) {
               info={info}
               onChanged={refreshMeta}
               onJump={jumpFromFlag}
+              onJumpSeq={goto}
             />
           )
         )}
@@ -225,6 +226,7 @@ export default function ViewerPage({ tunnelId, active }) {
         est={ov.groups.est}
         missing={ov.groups.missing}
         anchored={ov.groups.anchored}
+        anomaly={ov.groups.anomaly}
         startM={ov.start_m}
         endM={ov.end_m}
         current={current}

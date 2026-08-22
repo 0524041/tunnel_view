@@ -88,6 +88,41 @@ def read_display_dims(path: Path) -> tuple[int | None, int | None]:
         return None, None
 
 
+def compute_aspect_anomalies(conn) -> list[dict]:
+    """各機位「套用機位旋轉後」的顯示比例多數派，少數派標記 aspect_anomaly=1。
+
+    直接以 photos 表已存的 width/height 計算（匯入與重新對齊共用）。
+    回傳異常清單供報告使用。
+    """
+    conn.execute("UPDATE photos SET aspect_anomaly = 0")
+    anomalies: list[dict] = []
+    cams = conn.execute("SELECT id, seq, name, rotation FROM cameras ORDER BY seq").fetchall()
+    for cam in cams:
+        rot = (cam["rotation"] or 0) % 180
+        photos = conn.execute(
+            "SELECT id, rel_path, width, height FROM photos "
+            "WHERE camera_id = ? AND COALESCE(manual_missing, 0) = 0 "
+            "AND width IS NOT NULL AND height IS NOT NULL",
+            (cam["id"],),
+        ).fetchall()
+        ratios: dict[int, list] = {}
+        for p in photos:
+            w, h = (p["height"], p["width"]) if rot else (p["width"], p["height"])
+            ratios.setdefault(round(w / h * 100), []).append(p)
+        if not ratios:
+            continue
+        majority = max(ratios, key=lambda k: len(ratios[k]))
+        for ratio_key, plist in ratios.items():
+            if ratio_key == majority:
+                continue
+            for p in plist:
+                conn.execute("UPDATE photos SET aspect_anomaly = 1 WHERE id = ?", (p["id"],))
+                anomalies.append(
+                    {"camera": cam["name"], "rel_path": p["rel_path"], "width": p["width"], "height": p["height"]}
+                )
+    return anomalies
+
+
 class TunnelImporter:
     def __init__(self, workspace: Workspace):
         self.ws = workspace
@@ -203,29 +238,23 @@ class TunnelImporter:
                         (off, len(s.photos), s.camera_index),
                     )
 
-                    # 比例異常偵測：套用機位旋轉後的顯示比例多數派，少數派列出
-                    rot = req.cameras[s.camera_index].rotation % 180
-                    ratios: dict[int, list[_ScannedPhoto]] = {}
-                    for stamp in s.photos:
-                        sp = scanned_by_pid[stamp.photo_id]
-                        if not sp.width or not sp.height:
-                            continue
-                        w_, h_ = (sp.height, sp.width) if rot else (sp.width, sp.height)
-                        ratios.setdefault(round(w_ / h_ * 100), []).append(sp)
-                    if ratios:
-                        majority = max(ratios, key=lambda k: len(ratios[k]))
-                        for ratio_key in ratios:
-                            if ratio_key == majority:
-                                continue
-                            for sp in ratios[ratio_key]:
-                                anomalies.append(
-                                    {
-                                        "camera": req.cameras[s.camera_index].name,
-                                        "rel_path": os.path.relpath(sp.path, cam_dir),
-                                        "width": sp.width,
-                                        "height": sp.height,
-                                    }
-                                )
+                # 比例異常偵測（以已寫入的顯示尺寸計算，含 group_seq 供概覽標記）
+                anomalies = compute_aspect_anomalies(conn)
+                anomalies = [
+                    {
+                        **a,
+                        "group_seq": (
+                            conn.execute(
+                                "SELECT g.seq AS seq FROM photos p "
+                                "JOIN cameras c ON c.id = p.camera_id "
+                                "LEFT JOIN photo_groups g ON g.id = p.group_id "
+                                "WHERE c.name = ? AND p.rel_path = ? AND COALESCE(p.manual_missing,0)=0",
+                                (a["camera"], a["rel_path"]),
+                            ).fetchone()["seq"]
+                        ),
+                    }
+                    for a in anomalies
+                ]
 
                 dist: dict[str, int] = {}
                 for g in result.groups:

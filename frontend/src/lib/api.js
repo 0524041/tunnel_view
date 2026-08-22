@@ -59,8 +59,36 @@ export const api = {
     }
   },
 
-  photoUrl: (tid, photoId, w) =>
-    `/api/tunnels/${tid}/photos/${photoId}${w ? `?w=${w}` : ''}`,
+  photoUrl: (tid, photoId, w, photo) => {
+    let u = `/api/tunnels/${tid}/photos/${photoId}`
+    const qs = []
+    if (w) qs.push(`w=${w}`)
+    if (photo) {
+      qs.push(`cr=${photo.camera_rotation ?? 0}`)
+      qs.push(`pr=${photo.rotation_override ?? -1}`)
+    }
+    return u + (qs.length ? `?${qs.join('&')}` : '')
+  },
+
+  reviewPhoto: async (tid, pid, result) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ result }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  },
+
+  resetReview: async (tid, pid) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/reset_review`, { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  fsList: (path) =>
+    fetch(`/api/fs/list?path=${encodeURIComponent(path || '')}`).then(handle),
+
+  fsPhotoUrl: (path) => `/api/fs/photo?path=${encodeURIComponent(path)}`,
 
   info: (tid) => fetch(`/api/tunnels/${tid}/info`).then(handle),
 

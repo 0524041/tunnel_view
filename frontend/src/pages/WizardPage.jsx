@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../lib/api'
 import { parseMileage, formatMileage } from '../lib/mileage'
+import FsBrowser from '../components/FsBrowser'
 
 export default function WizardPage({ onDone, onCancel }) {
   const [step, setStep] = useState(1)
@@ -15,6 +16,24 @@ export default function WizardPage({ onDone, onCancel }) {
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [pickerFor, setPickerFor] = useState(null)
+  const [previews, setPreviews] = useState({})
+
+  const loadRowPreview = (i, folder) => {
+    if (!folder) return
+    api.fsList(folder).then((d) => {
+      setPreviews((ps) => ({
+        ...ps,
+        [i]: d.sample ? api.fsPhotoUrl(`${d.path}/${d.sample}`) : null,
+      }))
+    }).catch(() => setPreviews((ps) => ({ ...ps, [i]: null })))
+  }
+
+  const pickFolder = (i, pick) => {
+    setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, folder: pick.folder, rotation: pick.rotation } : c)))
+    loadRowPreview(i, pick.folder)
+    setPickerFor(null)
+  }
 
   const startM = parseMileage(startText)
   const endM = parseMileage(endText)
@@ -126,6 +145,14 @@ export default function WizardPage({ onDone, onCancel }) {
 
         {step === 2 && (
           <section>
+            {pickerFor != null && (
+              <FsBrowser
+                initialPath={cameras[pickerFor]?.folder || ''}
+                initialRotation={cameras[pickerFor]?.rotation ?? 0}
+                onPick={(pick) => pickFolder(pickerFor, pick)}
+                onClose={() => setPickerFor(null)}
+              />
+            )}
             <p className="hint" style={{ marginBottom: 14 }}>
               資料夾必須位於<b style={{ color: 'var(--text-hi)' }}>伺服器本機磁碟</b>，填入絕對路徑（照片原地引用，不會搬動）。
             </p>
@@ -146,7 +173,9 @@ export default function WizardPage({ onDone, onCancel }) {
                   onChange={(e) =>
                     setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, folder: e.target.value } : c)))
                   }
+                  onBlur={() => loadRowPreview(i, cameras[i].folder)}
                 />
+                <button type="button" className="btn small" title="瀏覽選擇資料夾" onClick={() => setPickerFor(i)}>📁</button>
                 <select
                   className="field mono cam-rot"
                   value={cam.rotation ?? 0}
@@ -165,6 +194,19 @@ export default function WizardPage({ onDone, onCancel }) {
                 >移除</button>
               </div>
             ))}
+            {cameras.map((cam, i) =>
+              previews[i] ? (
+                <div className="wiz-prev" key={`pv-${i}`}>
+                  <span className="label">{cam.name} · 首張預覽</span>
+                  <img
+                    src={previews[i]}
+                    alt=""
+                    style={{ transform: `rotate(${cam.rotation ?? 0}deg)` }}
+                    className={(cam.rotation ?? 0) % 180 !== 0 ? 'rot90' : ''}
+                  />
+                </div>
+              ) : null,
+            )}
             <button
               type="button"
               className="btn small"
