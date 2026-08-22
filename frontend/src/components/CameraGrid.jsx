@@ -10,6 +10,7 @@ export default function CameraGrid({
   layoutCols = 'auto',
   fit = 'contain',
   anomalyPaths,
+  highlightPhotoId,
   onOpenOriginal,
   onRotate,
 }) {
@@ -50,7 +51,7 @@ export default function CameraGrid({
         tunnelId={tunnelId}
         photo={photo}
         name={name}
-        flagged={!!photo.flagged}
+        highlighted={photo.photo_id === highlightPhotoId}
         view={view}
         onView={setView}
         showRotate={
@@ -74,7 +75,7 @@ export default function CameraGrid({
   )
 }
 
-function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, onOpenOriginal, onRotate, fit }) {
+function PhotoTile({ tunnelId, photo, name, highlighted, view, onView, showRotate, onOpenOriginal, onRotate, fit }) {
   const ref = useRef(null)
   const [loaded, setLoaded] = useState(false)
   const dragRef = useRef(null)
@@ -146,7 +147,7 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
   return (
     <div
       ref={ref}
-      className={`tile ${flagged ? 'tile-flag' : ''}`}
+      className={`tile ${highlighted ? 'tile-flash' : ''}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -168,7 +169,6 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, o
         }}
       />
       <span className="chip cam-chip">{name}</span>
-      {flagged && <span className="chip red flag-chip">待檢查</span>}
       {photo.aspect_anomaly === 1 && <span className="chip amber aspect-chip">比例</span>}
       {showRotate && (
         <button

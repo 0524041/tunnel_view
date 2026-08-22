@@ -79,9 +79,13 @@ with sync_playwright() as p:
     page.wait_for_load_state("networkidle")
     check("建立並進入檢視器", True)
 
-    # 5. 檢視器：網格照片載入
-    page.wait_for_selector("img.tile-img.on", timeout=20000)
-    n_img = page.locator("img.tile-img.on").count()
+    # 5. 檢視器：網格照片載入（輪詢等待，避免串流競態）
+    n_img = 0
+    for _ in range(30):
+        page.wait_for_timeout(500)
+        n_img = page.locator("img.tile-img.on").count()
+        if n_img >= 3:
+            break
     check("四視角照片載入", n_img >= 3, f"({n_img} 張)")
 
     # 6. 鍵盤導航 →/←
@@ -124,9 +128,12 @@ with sync_playwright() as p:
     locked = page.locator(".vread-mile.lock").count()
     check("錨定後里程轉為藍色鎖定樣式", locked == 1)
 
-    # 8. 錨點抽屜列出錨點
-    drawer_text = page.inner_text(".drawer")
-    check("錨點抽屜顯示 K23+150", "K23+150" in drawer_text)
+    # 8. 錨點列列出錨點（R4：錨點列為獨立開關）
+    if page.locator(".anchor-panel").count() == 0:
+        page.click(".vtop >> text=錨點列")
+        page.wait_for_timeout(300)
+    drawer_text = page.inner_text(".anchor-panel .drawer")
+    check("錨點列顯示 K23+150", "K23+150" in drawer_text)
 
     # 9. Ctrl+G 跳轉
     page.keyboard.press("Control+g")
@@ -175,7 +182,8 @@ with sync_playwright() as p:
 
     # ===== 修訂 R1：資訊面板 / 重新對齊 / 合併 / 原圖檢視 / 旋轉 =====
     page.keyboard.press("Escape")
-    page.click(".siderail-tabs button >> nth=1")
+    if page.locator(".info-panel").count() == 0:
+        page.click(".vtop >> text=資訊")
     page.wait_for_selector(".info-drawer")
     drawer_txt = page.inner_text(".info-drawer")
     check("資訊面板開啟（含匯入報告）", "容差" in drawer_txt and "群組數" in drawer_txt)
@@ -226,7 +234,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(1000)
     check("相機旋轉設定無錯誤", len(errors) == 0)
 
-    # ===== 修訂 R2：版型編輯 / fit 切換 / 側欄三態 =====
+    # ===== 修訂 R2：版型編輯 / fit 切換 =====
     # 相機頁籤已是版型編輯器：點選兩格交換
     page.click(".info-tab >> text=相機")
     page.wait_for_selector(".le-grid")
@@ -246,7 +254,8 @@ with sync_playwright() as p:
     page.wait_for_load_state("networkidle")
     page.click(".tunnel-card")
     page.wait_for_selector("img.tile-img.on", timeout=15000)
-    page.click(".siderail-tabs button >> nth=1")
+    if page.locator(".info-panel").count() == 0:
+        page.click(".vtop >> text=資訊")
     page.wait_for_selector(".info-drawer")
     page.click(".info-tab >> text=相機")
     page.wait_for_selector(".info-drawer .le-cols")
@@ -259,14 +268,64 @@ with sync_playwright() as p:
     page.wait_for_timeout(200)
     check("照片 fit 模式切換", page.locator(".vtop button", has_text="填滿").count() == 1)
 
-    # 側欄三態
-    rail = page.locator(".siderail")
-    rail.locator("button[title='收合']").click()
-    page.wait_for_timeout(200)
-    check("側欄收合", "mini" in (rail.get_attribute("class") or ""))
-    rail.locator("button[title='展開']").click()
-    page.wait_for_timeout(200)
-    check("側欄展開", "open" in (rail.get_attribute("class") or ""))
+    # 側欄獨立兩態開關（R4）
+    page.click(".vtop >> text=資訊")
+    page.wait_for_timeout(250)
+    check("資訊面板收起", page.locator(".info-panel").count() == 0)
+    page.click(".vtop >> text=資訊")
+    page.wait_for_timeout(250)
+    check("資訊面板展開", page.locator(".info-panel").count() == 1)
+    page.click(".vtop >> text=錨點列")
+    page.wait_for_timeout(250)
+    check("錨點列收起", page.locator(".anchor-panel").count() == 0)
+    page.click(".vtop >> text=錨點列")
+    page.wait_for_timeout(250)
+
+    # ===== 修訂 R4：異狀標註 / 圖例 / 幫助 / 異狀總覽 =====
+    legend = page.inner_text(".rail-legend")
+    check("里程軌圖例含異狀項且在軌道下方", "異狀" in legend)
+
+    page.click(".rail-help")
+    page.wait_for_selector(".help-dialog")
+    help_txt = page.inner_text(".help-dialog")
+    check("幫助 modal 含快捷鍵與功能說明", "Ctrl + G" in help_txt and "異狀總覽" in help_txt)
+    page.keyboard.press("Escape")
+
+    # 開原圖 → A 開標註面板 → 新增類型＋異狀 → 儲存
+    page.wait_for_selector("img.tile-img.on", timeout=15000)
+    tile = page.locator(".tile-img.on").first
+    tb = tile.bounding_box()
+    page.mouse.click(tb["x"] + tb["width"] / 2, tb["y"] + tb["height"] / 2)
+    page.wait_for_selector(".orig-overlay")
+    check("點擊開啟原圖覆蓋層（R4 再測）", True)
+    page.keyboard.press("a")
+    page.wait_for_selector(".anno-panel")
+    page.click("text=類型管理")
+    page.fill(".anno-addtype input", "管線外露")
+    page.click(".anno-addtype button")
+    page.wait_for_timeout(400)
+    type_chips = page.inner_text(".anno-typelist")
+    check("自訂類型新增成功", "管線外露" in type_chips)
+    page.click("text=＋ 新增異狀")
+    page.fill(".anno-note", "E2E 測試備註")
+    page.click(".anno-save button")
+    page.wait_for_timeout(900)
+    saved_btn = page.inner_text(".anno-save button")
+    check("異狀標註儲存", "已儲存" in saved_btn, f"({saved_btn.strip()})")
+    page.keyboard.press("Escape")
+
+    # 切換到異狀總覽模式
+    page.click(".mode-seg >> text=異狀總覽")
+    page.wait_for_selector(".anomaly-grid")
+    cards = page.locator(".anomaly-card").count()
+    check("異狀總覽卡片出現", cards >= 1, f"({cards} 張)")
+    page.locator(".anomaly-card").first.click()
+    page.wait_for_selector(".anno-dialog")
+    dlg = page.inner_text(".anno-dialog")
+    check("總覽編輯 modal 含標註表單", "照片備註" in dlg and "異狀" in dlg)
+    page.click(".anno-dialog >> text=在檢視器開啟")
+    page.wait_for_timeout(700)
+    check("定位回檢視模式", page.locator(".cgrid").count() == 1)
 
     check("無 JS 錯誤", len(errors) == 0, "; ".join(errors[:3]))
     browser.close()

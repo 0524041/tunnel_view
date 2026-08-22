@@ -73,6 +73,17 @@ class TunnelService:
                     "GROUP BY g.seq"
                 ).fetchall()
             }
+            defect_counts = {
+                r["seq"]: r["n"]
+                for r in conn.execute(
+                    "SELECT g.seq AS seq, COUNT(DISTINCT pa.photo_id) AS n "
+                    "FROM photo_anomalies pa "
+                    "JOIN photos p ON p.id = pa.photo_id "
+                    "JOIN photo_groups g ON g.id = p.group_id "
+                    "WHERE COALESCE(p.manual_missing, 0) = 0 "
+                    "GROUP BY g.seq"
+                ).fetchall()
+            }
             rows = conn.execute(
                 "SELECT seq, est_mileage_m, missing_count FROM photo_groups ORDER BY seq"
             ).fetchall()
@@ -91,6 +102,7 @@ class TunnelService:
                 "missing": [r["missing_count"] for r in rows],
                 "anchored": [r["seq"] in anchored for r in rows],
                 "anomaly": [anomaly_counts.get(r["seq"], 0) for r in rows],
+                "ano": [defect_counts.get(r["seq"], 0) for r in rows],
             },
         }
 
@@ -236,53 +248,137 @@ class TunnelService:
             [(m, s) for s, m in est.items()],
         )
 
-    # ---------- 待檢查 / 改判缺照 ----------
+    # ---------- 異狀標註 / 備註 ----------
 
-    def confirm_flag(self, tunnel_id: int, photo_id: int) -> None:
+    def _type_names(self) -> dict[int, str]:
+        return {t["id"]: t["name"] for t in self.ws.defect_types()}
+
+    def annotation(self, tunnel_id: int, photo_id: int) -> dict:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
-            with conn:
-                cur = conn.execute("UPDATE photos SET flagged = 0 WHERE id = ?", (photo_id,))
-                if cur.rowcount == 0:
-                    raise KeyError(photo_id)
+            photo = conn.execute(
+                "SELECT note FROM photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            if photo is None:
+                raise KeyError(photo_id)
+            items = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT id, type_id, note, created_at FROM photo_anomalies "
+                    "WHERE photo_id = ? ORDER BY id",
+                    (photo_id,),
+                ).fetchall()
+            ]
         finally:
             conn.close()
+        types = self._type_names()
+        for it in items:
+            it["type_name"] = types.get(it.pop("type_id"), "（未知類型）")
+        return {"note": photo["note"], "items": items}
 
-    def review_photo(self, tunnel_id: int, photo_id: int, result: str) -> dict:
-        """人工複核結論：'ok' 清除旗標；'anomaly' 標記確認異常。回傳所在群組 seq。"""
-        if result not in ("ok", "anomaly"):
-            raise ValueError("result 必須為 ok 或 anomaly")
+    def set_annotation(self, tunnel_id: int, photo_id: int, note: str | None, items: list[dict]) -> dict:
+        """批次取代語意：整批寫入照片備註與異狀清單（原子性）。
+
+        items：[{id?(既有), type_id, note}]。type_id 須存在；已封存類型允許保留
+        （既有紀錄可編輯而不強制移除）。客端帶來不屬於本照片的 id 一律視為新增。
+        """
+        known = {t["id"] for t in self.ws.defect_types()}
+        cleaned = []
+        for it in items:
+            tid = int(it.get("type_id") or 0)
+            if tid not in known:
+                raise ValueError(f"未知類型 type_id={tid}")
+            cleaned.append({"id": it.get("id"), "type_id": tid, "note": it.get("note") or None})
+
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             with conn:
-                row = conn.execute(
-                    "UPDATE photos SET review_result = ?, flagged = 0 WHERE id = ? "
-                    "AND COALESCE(manual_missing, 0) = 0",
-                    (result, photo_id),
-                )
-                if row.rowcount == 0:
+                exists = conn.execute("SELECT 1 FROM photos WHERE id = ?", (photo_id,)).fetchone()
+                if exists is None:
                     raise KeyError(photo_id)
-                seq_row = conn.execute(
-                    "SELECT g.seq AS seq FROM photos p JOIN photo_groups g ON g.id = p.group_id "
-                    "WHERE p.id = ?",
+                kept_created = {
+                    r["id"]: r["created_at"]
+                    for r in conn.execute(
+                        "SELECT id, created_at FROM photo_anomalies WHERE photo_id = ?",
+                        (photo_id,),
+                    ).fetchall()
+                }
+                conn.execute("DELETE FROM photo_anomalies WHERE photo_id = ?", (photo_id,))
+                conn.execute("UPDATE photos SET note = ? WHERE id = ?", (note or None, photo_id))
+                used_ids: set[int] = set()
+                for c in cleaned:
+                    real_id = c["id"] if c["id"] in kept_created and c["id"] not in used_ids else None
+                    if real_id is not None:
+                        used_ids.add(real_id)
+                        conn.execute(
+                            "INSERT INTO photo_anomalies (id, photo_id, type_id, note, created_at) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (real_id, photo_id, c["type_id"], c["note"], kept_created[real_id]),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO photo_anomalies (photo_id, type_id, note) VALUES (?, ?, ?)",
+                            (photo_id, c["type_id"], c["note"]),
+                        )
+                loc = conn.execute(
+                    "SELECT g.seq AS seq, g.est_mileage_m AS est FROM photos p "
+                    "LEFT JOIN photo_groups g ON g.id = p.group_id WHERE p.id = ?",
                     (photo_id,),
                 ).fetchone()
-            return {"group_seq": seq_row["seq"] if seq_row else None}
         finally:
             conn.close()
+        result = self.annotation(tunnel_id, photo_id)
+        result["group_seq"] = loc["seq"] if loc else None
+        result["est_mileage_m"] = loc["est"] if loc else None
+        return result
 
-    def reset_review(self, tunnel_id: int, photo_id: int) -> None:
-        """撤銷人工複核結論，回到待檢查狀態。"""
+    def anomaly_overview(
+        self,
+        tunnel_id: int,
+        *,
+        type_ids: list[int] | None = None,
+        q: str | None = None,
+        order: str = "asc",
+    ) -> list[dict]:
+        """總覽頁資料：全部異狀＋照片/群組/相機/類型資訊，排除改判缺照。"""
+        sql = (
+            "SELECT pa.id AS anomaly_id, pa.photo_id, pa.note AS anomaly_note, pa.created_at, "
+            "pa.type_id, p.rel_path, p.note AS photo_note, c.name AS camera_name, "
+            "g.seq AS group_seq, g.est_mileage_m "
+            "FROM photo_anomalies pa "
+            "JOIN photos p ON p.id = pa.photo_id "
+            "JOIN cameras c ON c.id = p.camera_id "
+            "LEFT JOIN photo_groups g ON g.id = p.group_id "
+            "WHERE COALESCE(p.manual_missing, 0) = 0"
+        )
+        params: list = []
+        if type_ids:
+            sql += f" AND pa.type_id IN ({','.join('?' * len(type_ids))})"
+            params.extend(type_ids)
+        if q:
+            sql += " AND (pa.note LIKE ? OR p.note LIKE ?)"
+            params.extend([f"%{q}%", f"%{q}%"])
+        sql += f" ORDER BY g.est_mileage_m {'DESC' if order == 'desc' else 'ASC'}, pa.id"
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        finally:
+            conn.close()
+        types = self._type_names()
+        for r in rows:
+            r["type_name"] = types.get(r.pop("type_id"), "（未知類型）")
+        return rows
+
+    def set_camera_name(self, tunnel_id: int, camera_seq: int, name: str) -> None:
+        name = name.strip()
+        if not name:
+            raise ValueError("相機名稱不可空白")
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             with conn:
-                row = conn.execute(
-                    "UPDATE photos SET review_result = NULL, flagged = 1 "
-                    "WHERE id = ? AND review_result IS NOT NULL",
-                    (photo_id,),
-                )
-                if row.rowcount == 0:
-                    raise KeyError(photo_id)
+                cur = conn.execute("UPDATE cameras SET name = ? WHERE seq = ?", (name, camera_seq))
+                if cur.rowcount == 0:
+                    raise KeyError(camera_seq)
         finally:
             conn.close()
 
@@ -637,26 +733,6 @@ class TunnelService:
                 "SELECT value FROM meta WHERE key = 'layout_cols'"
             ).fetchone()
             layout_cols_val = layout_cols["value"] if layout_cols else "auto"
-            flagged = [
-                dict(r)
-                for r in conn.execute(
-                    "SELECT p.id AS photo_id, c.name AS camera, p.rel_path, p.exif_time, g.seq AS group_seq, "
-                    "CASE WHEN p.time_source = 'mtime' THEN 'exif缺漏' ELSE '對齊殘差' END AS reason "
-                    "FROM photos p JOIN cameras c ON c.id = p.camera_id "
-                    "LEFT JOIN photo_groups g ON g.id = p.group_id "
-                    "WHERE p.flagged = 1 AND p.review_result IS NULL AND COALESCE(p.manual_missing, 0) = 0"
-                ).fetchall()
-            ]
-            reviewed = [
-                dict(r)
-                for r in conn.execute(
-                    "SELECT p.id AS photo_id, c.name AS camera, p.rel_path, g.seq AS group_seq, "
-                    "p.review_result AS result "
-                    "FROM photos p JOIN cameras c ON c.id = p.camera_id "
-                    "LEFT JOIN photo_groups g ON g.id = p.group_id "
-                    "WHERE p.review_result IS NOT NULL"
-                ).fetchall()
-            ]
             manual_missing = [
                 dict(r)
                 for r in conn.execute(
@@ -683,8 +759,6 @@ class TunnelService:
             "layout_cols": layout_cols_val,
             "report": report,
             "cameras": cameras,
-            "flagged": flagged,
-            "reviewed": reviewed,
             "manual_missing": manual_missing,
             "rotation_overrides": rotation_overrides,
             "dangling_anchors": dangling,

@@ -58,6 +58,7 @@ class MergeBody(BaseModel):
 
 
 class CameraUpdateBody(BaseModel):
+    name: str | None = None
     rotation: int | None = None
     grid_pos: int | None = None
 
@@ -66,8 +67,18 @@ class PhotoRotationBody(BaseModel):
     angle: int
 
 
-class ReviewBody(BaseModel):
-    result: str
+class AnomalyItemBody(BaseModel):
+    id: int | None = None
+    type_id: int
+    note: str | None = None
+
+
+class AnnotationBody(BaseModel):
+    note: str | None = None
+    items: list[AnomalyItemBody] = []
+
+class DefectTypeBody(BaseModel):
+    name: str = Field(min_length=1)
 
 
 def _needs_exif_transpose(path: Path) -> bool:
@@ -221,25 +232,76 @@ def create_app(workspace: Workspace) -> FastAPI:
         hub.broadcast(tid, {"type": "anchor_delete", "group_seq": seq})
         return {"ok": True}
 
-    @app.post("/api/tunnels/{tid}/photos/{pid}/review")
-    def review_photo(tid: int, pid: int, body: ReviewBody):
+    # ---------- 異狀類型（全工作區共用） ----------
+
+    @app.get("/api/defect-types")
+    def list_defect_types():
+        return workspace.defect_types()
+
+    @app.post("/api/defect-types")
+    def add_defect_type(body: DefectTypeBody):
         try:
-            result = service.review_photo(tid, pid, body.result)
+            return workspace.add_defect_type(body.name)
+        except KeyError as e:
+            raise HTTPException(409, str(e.args[0]))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/defect-types/{type_id}")
+    def remove_defect_type(type_id: int):
+        try:
+            action = workspace.remove_defect_type(type_id)
+        except KeyError:
+            raise HTTPException(404, "類型不存在")
+        return {"action": action}
+
+    # ---------- 照片標註（備註＋異狀） ----------
+
+    @app.get("/api/tunnels/{tid}/photos/{pid}/annotation")
+    def get_annotation(tid: int, pid: int):
+        try:
+            return service.annotation(tid, pid)
+        except KeyError:
+            raise HTTPException(404, "照片不存在")
+
+    @app.put("/api/tunnels/{tid}/photos/{pid}/annotation")
+    def put_annotation(tid: int, pid: int, body: AnnotationBody):
+        try:
+            result = service.set_annotation(tid, pid, body.note, [i.model_dump() for i in body.items])
         except KeyError:
             raise HTTPException(404, "照片不存在")
         except ValueError as e:
             raise HTTPException(400, str(e))
-        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        _invalidate_cache(workspace.root, tid)
+        hub.broadcast(
+            tid,
+            {
+                "type": "annotation_updated",
+                "photo_id": pid,
+                "group_seq": result.get("group_seq"),
+                "est_mileage_m": result.get("est_mileage_m"),
+            },
+        )
         return result
 
-    @app.post("/api/tunnels/{tid}/photos/{pid}/reset_review")
-    def reset_review(tid: int, pid: int):
-        try:
-            service.reset_review(tid, pid)
-        except KeyError:
-            raise HTTPException(404, "照片沒有待撤銷的複核結論")
-        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
-        return {"ok": True}
+    @app.get("/api/tunnels/{tid}/anomalies")
+    def anomalies_overview(
+        tid: int,
+        type_id: str = "",
+        q: str = "",
+        order: str = "asc",
+    ):
+        ids = []
+        for part in type_id.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    ids.append(int(part))
+                except ValueError:
+                    raise HTTPException(400, f"無效的 type_id：{part}")
+        if order not in ("asc", "desc"):
+            raise HTTPException(400, "order 僅接受 asc 或 desc")
+        return service.anomaly_overview(tid, type_ids=ids or None, q=q or None, order=order)
 
     @app.get("/api/fs/list")
     def fs_list(path: str = ""):
@@ -280,15 +342,6 @@ def create_app(workspace: Workspace) -> FastAPI:
     @app.get("/api/tunnels/{tid}/info")
     def tunnel_info(tid: int):
         return service.info(tid)
-
-    @app.post("/api/tunnels/{tid}/photos/{pid}/confirm_flag")
-    def confirm_flag(tid: int, pid: int):
-        try:
-            service.confirm_flag(tid, pid)
-        except KeyError:
-            raise HTTPException(404, "照片不存在")
-        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
-        return {"ok": True}
 
     @app.post("/api/tunnels/{tid}/photos/{pid}/mark_missing")
     def mark_missing(tid: int, pid: int):
@@ -333,19 +386,23 @@ def create_app(workspace: Workspace) -> FastAPI:
 
     @app.put("/api/tunnels/{tid}/cameras/{seq}")
     def update_camera(tid: int, seq: int, body: CameraUpdateBody):
-        if body.rotation is None and body.grid_pos is None:
-            raise HTTPException(400, "需提供 rotation 或 grid_pos")
+        if body.name is None and body.rotation is None and body.grid_pos is None:
+            raise HTTPException(400, "需提供 name、rotation 或 grid_pos")
         if body.rotation is not None and (
             body.rotation % 90 != 0 or not (0 <= body.rotation <= 270)
         ):
             raise HTTPException(400, "旋轉角度僅接受 0/90/180/270")
         try:
+            if body.name is not None:
+                service.set_camera_name(tid, seq, body.name)
             if body.rotation is not None:
                 service.set_camera_rotation(tid, seq, body.rotation)
             if body.grid_pos is not None:
                 service.set_camera_grid_pos(tid, seq, body.grid_pos)
         except KeyError:
             raise HTTPException(404, "相機不存在")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         _invalidate_cache(workspace.root, tid)
         hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
         return {"ok": True}

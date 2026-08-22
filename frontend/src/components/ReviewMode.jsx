@@ -8,6 +8,7 @@ function parseTs(s) {
 export default function ReviewMode({ tunnelId, current, cameras, onClose, onChanged }) {
   const [groups, setGroups] = useState([])
   const [conflict, setConflict] = useState(null)
+  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -57,7 +58,8 @@ export default function ReviewMode({ tunnelId, current, cameras, onClose, onChan
   return (
     <div className="review-overlay">
       <div className="review-head">
-        <span className="display review-title">檢閱邊界 · 群組 #{String(current + 1).padStart(4, '0')}</span>
+        <span className="display review-title">合併邊界 · 群組 #{String(current + 1).padStart(4, '0')}</span>
+        {error && <span className="err-text">{error}</span>}
         <div className="row-actions">
           <button type="button" className="btn small" disabled={!prevG || busy} onClick={() => doMerge('prev')}>
             ⇤ 與前合併

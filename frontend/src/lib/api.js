@@ -70,21 +70,6 @@ export const api = {
     return u + (qs.length ? `?${qs.join('&')}` : '')
   },
 
-  reviewPhoto: async (tid, pid, result) => {
-    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ result }),
-    })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    return r.json()
-  },
-
-  resetReview: async (tid, pid) => {
-    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/reset_review`, { method: 'POST' })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  },
-
   cameraThumbs: (tid) => fetch(`/api/tunnels/${tid}/camera_thumbs`).then(handle),
 
   setCameraGridPos: async (tid, seq, gridPos) => {
@@ -114,11 +99,6 @@ export const api = {
 
   deleteTunnel: async (tid) => {
     const r = await fetch(`/api/tunnels/${tid}`, { method: 'DELETE' })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  },
-
-  confirmFlag: async (tid, pid) => {
-    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/confirm_flag`, { method: 'POST' })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
   },
 
@@ -179,6 +159,53 @@ export const api = {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ angle }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  defectTypes: () => fetch('/api/defect-types').then(handle),
+
+  addDefectType: async (name) => {
+    const r = await fetch('/api/defect-types', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    return handle(r)
+  },
+
+  removeDefectType: async (id) => {
+    const r = await fetch(`/api/defect-types/${id}`, { method: 'DELETE' })
+    return handle(r)
+  },
+
+  annotation: (tid, pid) => fetch(`/api/tunnels/${tid}/photos/${pid}/annotation`).then(handle),
+
+  setAnnotation: async (tid, pid, note, items) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/annotation`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        note: note ?? null,
+        items: items.map((i) => ({ id: i.id ?? null, type_id: i.type_id, note: i.note ?? null })),
+      }),
+    })
+    return handle(r)
+  },
+
+  anomalies: (tid, { typeId = '', q = '', order = 'asc' } = {}) => {
+    const qs = new URLSearchParams()
+    if (typeId) qs.set('type_id', typeId)
+    if (q) qs.set('q', q)
+    qs.set('order', order)
+    return fetch(`/api/tunnels/${tid}/anomalies?${qs}`).then(handle)
+  },
+
+  setCameraName: async (tid, seq, name) => {
+    const r = await fetch(`/api/tunnels/${tid}/cameras/${seq}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
     })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
   },

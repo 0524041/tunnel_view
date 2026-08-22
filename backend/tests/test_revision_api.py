@@ -67,27 +67,6 @@ def _window(client, around, before=6, after=14):
 
 
 class TestFlagAndMissing:
-    def test_confirm_flag_clears(self, env):
-        env.execute = None
-        # 製造一張旗標照片
-        import sqlite3
-
-        # 直接透過 API 取得一張照片後手動設旗標（模擬殘差）
-        win = _window(env, 1)
-        pid = win[1]["photos"][0]["photo_id"]
-        conn = sqlite3.connect(str(env.ws_root / [f for f in __import__("os").listdir(env.ws_root) if f.endswith(".db") and f != "index.db"][0]))
-        conn.execute("UPDATE photos SET flagged=1 WHERE id=?", (pid,))
-        conn.commit()
-        conn.close()
-
-        info = env.get(f"/api/tunnels/{env.tid}/info").json()
-        assert len(info["flagged"]) == 1
-
-        r = env.post(f"/api/tunnels/{env.tid}/photos/{pid}/confirm_flag")
-        assert r.status_code == 200
-        info = env.get(f"/api/tunnels/{env.tid}/info").json()
-        assert len(info["flagged"]) == 0
-
     def test_mark_missing_hides_and_restores(self, env):
         win = _window(env, 1)
         g1 = win[1]
@@ -246,7 +225,6 @@ class TestInfoPanel:
         assert info["report"]["tolerance_seconds"] == 2.0
         assert len(info["report"]["cameras"]) == 2
         assert info["cameras"][0]["rotation"] == 0
-        assert isinstance(info["flagged"], list)
         assert isinstance(info["manual_missing"], list)
         assert isinstance(info["rotation_overrides"], list)
         assert isinstance(info["dangling_anchors"], list)

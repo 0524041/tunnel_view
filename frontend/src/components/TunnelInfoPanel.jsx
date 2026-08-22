@@ -6,12 +6,13 @@ import LayoutEditor from './LayoutEditor'
 
 const ROT_OPTIONS = [0, 90, 180, 270]
 
-export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onChanged, currentGroupCount = 0 }) {
+export default function TunnelInfoPanel({ tunnelId, info, onChanged, currentGroupCount = 0 }) {
   const [tab, setTab] = useState('report')
   const [tolerance, setTolerance] = useState(null)
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [renaming, setRenaming] = useState(null)
 
   const [camThumbs, setCamThumbs] = useState({})
   useEffect(() => {
@@ -34,6 +35,7 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
       for (const c of cams) {
         const prev = cur.get(c.seq)
         if (!prev) continue
+        if (prev.name !== c.name && c.name?.trim()) await api.setCameraName(tunnelId, c.seq, c.name)
         if (prev.rotation !== c.rotation) await api.setCameraRotation(tunnelId, c.seq, c.rotation)
         if ((prev.grid_pos ?? -1) !== c.grid_pos) await api.setCameraGridPos(tunnelId, c.seq, c.grid_pos)
       }
@@ -46,19 +48,16 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
     }
   }
 
-  const actFlag = async (index, result) => {
-    setBusy(true)
-    setError('')
+  const commitRename = async (seq, name) => {
+    setRenaming(null)
+    const trimmed = name?.trim()
+    if (!trimmed || trimmed === info.cameras.find((c) => c.seq === seq)?.name) return
     try {
-      await api.reviewPhoto(tunnelId, info.flagged[index].photo_id, result)
-      const next = info.flagged.find((f, j) => j !== index)
+      await api.setCameraName(tunnelId, seq, trimmed)
+      toast('已改名')
       onChanged?.()
-      if (next?.group_seq != null) onJumpSeq?.(next.group_seq)
-      else if (info.flagged[index]?.group_seq != null) onJumpSeq?.(info.flagged[index].group_seq)
     } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
+      toast(e.message, 'err')
     }
   }
 
@@ -93,8 +92,6 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
       <div className="info-tabs">
         {[
           ['report', '報告'],
-          ['flagged', `待檢查 ${info.flagged.length || ''}`],
-          ['reviewed', `人工檢查 ${info.reviewed.length || ''}`],
           ['cams', '相機'],
         ].map(([k, label]) => (
           <button type="button" key={k} className={`info-tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>
@@ -110,7 +107,6 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
               <div className="kv mono">
                 <span>容差</span><b>{report.tolerance_seconds ?? '—'}s</b>
                 <span>群組數</span><b>{report.group_count ?? '—'}</b>
-                <span>待檢查</span><b>{report.flagged_count ?? 0}</b>
                 {report.imported_at && <span>建立於</span>}
                 {report.imported_at && <b>{report.imported_at}</b>}
               </div>
@@ -156,7 +152,6 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
                           {' '}({preview.group_count > currentGroupCount ? '+' : ''}{preview.group_count - currentGroupCount})
                         </span>
                       )}</b>
-                    <span>新待檢查</span><b>{preview.flagged_count}</b>
                   </div>
                   <div className="dist-row">
                     {Object.entries(preview.missing_distribution).map(([m, n]) => (
@@ -186,66 +181,7 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
               </Section>
             )}
 
-            {info.dangling_anchors.length > 0 && (
-              <Section title={`⚠ 失準錨點 · ${info.dangling_anchors.length}`}>
-                {info.dangling_anchors.map((a, i) => (
-                  <div key={i} className="list-item warn-text">
-                    <span className="mono">{formatMileage(a.mileage_m)}</span>
-                    <span className="hint">退回最近群組 #{(a.group_seq ?? -1) + 1} · 載體 {a.carrier_camera ?? '?'}</span>
-                  </div>
-                ))}
-              </Section>
-            )}
-          </>
-        )}
-
-        {tab === 'flagged' && (
-          <>
-            {info.flagged.length === 0 && <p className="hint drawer-empty">目前沒有待檢查照片。</p>}
-            {info.flagged.map((f, i) => (
-              <div key={f.photo_id} className="panel flag-card with-thumb">
-                <img className="flag-thumb" src={api.photoUrl(tunnelId, f.photo_id, 160)} alt="" />
-                <div className="flag-body">
-                  <div className="mono list-main">{f.camera} · {f.rel_path}</div>
-                  <span className="chip amber">{f.reason}{f.group_seq != null ? ` · 群組 #${String(f.group_seq + 1).padStart(4, '0')}` : ''}</span>
-                <div className="row-actions">
-                  <button type="button" className="btn small" onClick={() => f.group_seq != null && onJumpSeq?.(f.group_seq)}>
-                    📍 跳轉預覽
-                  </button>
-                  <button type="button" className="btn small" disabled={busy} onClick={() => actFlag(i, 'ok')}>✅ 檢查OK</button>
-                  <button type="button" className="btn danger small" disabled={busy} onClick={() => actFlag(i, 'anomaly')}>🚩 標注異常</button>
-                </div>
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-
-        {tab === 'reviewed' && (
-          <>
-            {info.reviewed.length === 0 && info.manual_missing.length === 0 && (
-              <p className="hint drawer-empty">尚無人工檢查紀錄。</p>
-            )}
-            {info.reviewed.map((r) => (
-              <div key={`rv-${r.photo_id}`} className="panel flag-card">
-                <div className="mono list-main">{r.camera} · {r.rel_path}</div>
-                <div className="row-actions">
-                  <span className={`chip ${r.result === 'ok' ? 'green-chip' : 'red'}`}>
-                    {r.result === 'ok' ? '✅ 檢查OK' : '🚩 已標注異常'}
-                  </span>
-                  {r.group_seq != null && (
-                    <button type="button" className="btn small" onClick={() => onJumpSeq?.(r.group_seq)}>📍</button>
-                  )}
-                  <button
-                    type="button"
-                    className="btn small"
-                    title="撤銷結論，回到待檢查"
-                    onClick={() => api.resetReview(tunnelId, r.photo_id).then(onChanged)}
-                  >↩</button>
-                </div>
-              </div>
-            ))}
-            {info.manual_missing.length > 0 && (
+            {(info.manual_missing || []).length > 0 && (
               <Section title="合併時改判缺照">
                 {info.manual_missing.map((f) => (
                   <div key={`mm-${f.photo_id}`} className="panel flag-card">
@@ -259,11 +195,44 @@ export default function TunnelInfoPanel({ tunnelId, info, onJump, onJumpSeq, onC
                 ))}
               </Section>
             )}
+
+            {info.dangling_anchors.length > 0 && (
+              <Section title={`⚠ 失準錨點 · ${info.dangling_anchors.length}`}>
+                {info.dangling_anchors.map((a, i) => (
+                  <div key={i} className="list-item warn-text">
+                    <span className="mono">{formatMileage(a.mileage_m)}</span>
+                    <span className="hint">退回最近群組 #{(a.group_seq ?? -1) + 1} · 載體 {a.carrier_camera ?? '?'}</span>
+                  </div>
+                ))}
+              </Section>
+            )}
           </>
         )}
 
         {tab === 'cams' && (
           <>
+            {(info.cameras || []).map((c) => (
+              <div key={c.seq} className="panel cam-rename-row">
+                <span className="label">#{String(c.seq).padStart(2, '0')}</span>
+                {renaming === c.seq ? (
+                  <input
+                    className="field"
+                    autoFocus
+                    defaultValue={c.name}
+                    onBlur={(e) => commitRename(c.seq, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename(c.seq, e.target.value)
+                      if (e.key === 'Escape') setRenaming(null)
+                    }}
+                  />
+                ) : (
+                  <>
+                    <span className="list-main">{c.name}</span>
+                    <button type="button" className="btn small ghost" title="重新命名" onClick={() => setRenaming(c.seq)}>✎</button>
+                  </>
+                )}
+              </div>
+            ))}
             <LayoutEditor
               compact
               tunnelId={tunnelId}

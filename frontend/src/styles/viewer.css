@@ -210,28 +210,30 @@
   margin: auto 8px;
 }
 
-.rail-wrap {
-  height: 84px;
+.rail-block {
   flex: none;
-  position: relative;
   background: var(--bg1);
   border-top: 1px solid var(--line-strong);
-  cursor: crosshair;
   user-select: none;
+}
+.rail-wrap {
+  height: 56px;
+  position: relative;
+  cursor: crosshair;
   touch-action: none;
 }
 .rail-wrap canvas {
   display: block;
 }
 .rail-legend {
-  position: absolute;
-  right: 12px;
-  top: 8px;
+  position: relative;
   display: flex;
   gap: 14px;
   align-items: center;
   font-size: 11px;
   color: var(--text-dim);
+  padding: 3px 12px 5px;
+  border-top: 1px solid var(--line);
 }
 .rail-legend span {
   display: inline-flex;
@@ -242,11 +244,55 @@
   width: 8px;
   height: 8px;
   display: inline-block;
+  border-radius: 2px;
 }
 .rail-legend em {
   font-style: normal;
   border-left: 1px solid var(--line-strong);
   padding-left: 12px;
+}
+.rail-help {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.rail-tip {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 240px;
+  padding: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow-pop);
+  pointer-events: none;
+}
+.rail-tip img {
+  width: 84px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex: none;
+}
+.rail-tip-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.rail-tip-body b {
+  color: var(--amber);
+  font-size: 12px;
+}
+.rail-tip-body span {
+  font-size: 11px;
+  color: var(--text);
 }
 
 .vhint {
@@ -490,7 +536,7 @@ kbd {
   color: var(--amber);
 }
 
-/* ===== R2: 常駐側欄 ===== */
+/* ===== R2: 側欄（R4 起錨點列與資訊面板各自獨立開關） ===== */
 .siderail {
   display: flex;
   flex-direction: column;
@@ -500,33 +546,25 @@ kbd {
   flex: none;
 }
 .siderail.open { width: 300px; }
-.siderail.mini { width: 44px; }
-.siderail.hidden { display: none; }
+.anchor-panel + .info-panel {
+  border-left: none;
+}
 
-.siderail-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px;
-  border-bottom: 1px solid var(--line);
+.mode-seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  overflow: hidden;
 }
-.siderail-tabs button {
-  width: 30px;
-  height: 28px;
-  border-radius: 5px;
+.mode-seg button {
+  padding: 5px 14px;
+  font-size: 12px;
   color: var(--text-dim);
-  font-size: 14px;
+  background: transparent;
 }
-.siderail-tabs button:hover {
-  background: var(--bg3);
-  color: var(--text-hi);
-}
-.siderail-tabs button.on {
-  background: var(--amber-soft);
+.mode-seg button.on {
   color: var(--amber);
-}
-.rail-badge {
-  margin-left: 2px;
+  background: var(--amber-soft);
 }
 .siderail-body {
   flex: 1;
@@ -662,8 +700,7 @@ kbd {
   .siderail.open { width: 320px; }
 }
 @media (max-width: 1279px) {
-  .siderail.open,
-  .siderail.mini {
+  .siderail.open {
     position: absolute;
     right: 0;
     top: 0;
@@ -675,4 +712,285 @@ kbd {
 @media (max-width: 1023px) {
   .vtop { flex-wrap: wrap; row-gap: 6px; }
   .le-grid { min-height: 140px; }
+}
+
+/* ===== R4: 異狀標註 ===== */
+.orig-mainrow {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.anno-panel {
+  width: 320px;
+  flex: none;
+  background: var(--bg1);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.anno-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.anno-panel-head .label { margin: 0; }
+.anno-panel-head .hint { flex: 1; text-align: right; }
+.anno-panel-body {
+  flex: 1;
+  overflow-y: auto;
+}
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+.btn.ghost:hover {
+  color: var(--text-hi);
+  background: var(--bg3);
+}
+
+.anno-editor {
+  padding: 12px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+.anno-field {
+  display: grid;
+  gap: 6px;
+}
+.anno-note {
+  resize: vertical;
+  min-height: 44px;
+  font-family: var(--font-body);
+}
+.anno-item {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.anno-types {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.anno-typelist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip.dim {
+  opacity: 0.55;
+}
+.anno-x {
+  margin-left: 5px;
+  color: inherit;
+  opacity: 0.7;
+  font-size: 13px;
+  line-height: 1;
+}
+.anno-x:hover {
+  opacity: 1;
+  color: var(--red);
+}
+.anno-addtype {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+.anno-save {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 定位閃爍 */
+.tile-flash {
+  animation: tile-flash 0.9s ease 2;
+}
+@keyframes tile-flash {
+  0%, 100% { outline: 3px solid rgba(232, 87, 160, 0); box-shadow: none; }
+  50% { outline: 3px solid #e857a0; box-shadow: 0 0 18px rgba(232, 87, 160, 0.8); }
+}
+
+/* ===== R4: 異狀總覽頁 ===== */
+.anomaly-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.anomaly-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg1);
+  flex: none;
+}
+.filter-chip {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.filter-chip.on {
+  color: var(--amber);
+  border-color: rgba(255, 179, 0, 0.5);
+  background: var(--amber-soft);
+}
+.anomaly-search {
+  width: 220px;
+}
+.anomaly-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+.anomaly-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  align-content: start;
+}
+.anomaly-card {
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 130px auto;
+  transition: outline-color 0.15s ease;
+}
+.anomaly-card:hover {
+  outline: 1px solid rgba(232, 87, 160, 0.65);
+}
+.anomaly-thumb {
+  position: relative;
+  background: #000;
+}
+.anomaly-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.anomaly-body {
+  padding: 10px 12px;
+  display: grid;
+  gap: 7px;
+  justify-items: start;
+}
+.anomaly-mile {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+.chip.ano-type {
+  color: #ffb8dd;
+  background: rgba(232, 87, 160, 0.16);
+  border: 1px solid rgba(232, 87, 160, 0.45);
+}
+.anomaly-note {
+  word-break: break-all;
+  margin: 0;
+}
+
+.anno-dialog {
+  width: min(480px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.anno-dialog-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+.anno-dialog-head img {
+  width: 120px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex: none;
+}
+.anno-dialog-head > div {
+  flex: 1;
+  min-width: 0;
+}
+.anno-close {
+  flex: none;
+}
+
+/* ===== R4: 說明 modal ===== */
+.help-dialog {
+  width: min(640px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.help-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.help-body {
+  overflow-y: auto;
+  display: grid;
+  gap: 16px;
+}
+.help-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.help-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+.help-table td:first-child {
+  white-space: nowrap;
+  width: 130px;
+}
+.help-feature {
+  margin-top: 8px;
+}
+.help-feature b {
+  color: var(--amber);
+  font-size: 13px;
+}
+.help-feature p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.7;
+}
+
+/* ===== R4: 相機改名列 ===== */
+.cam-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+}
+.cam-rename-row .label { margin: 0; }
+.cam-rename-row .list-main {
+  flex: 1;
 }

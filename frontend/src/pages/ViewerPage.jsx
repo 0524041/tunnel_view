@@ -10,6 +10,8 @@ import MileageSearch from '../components/MileageSearch'
 import TunnelInfoPanel from '../components/TunnelInfoPanel'
 import ReviewMode from '../components/ReviewMode'
 import OriginalViewer from '../components/OriginalViewer'
+import AnomalyOverview from '../components/AnomalyOverview'
+import HelpModal from '../components/HelpModal'
 
 export default function ViewerPage({ tunnelId, active }) {
   const [ov, setOv] = useState(null)
@@ -21,13 +23,16 @@ export default function ViewerPage({ tunnelId, active }) {
   const pendingRef = useRef(new Set())
   const [dialogOpen, setDialogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [railTab, setRailTab] = useState(() => localStorage.getItem('tv_rail_tab') || 'anchors')
-  const [railMode, setRailMode] = useState(
-    () => localStorage.getItem('tv_rail_mode') || (window.innerWidth < 1280 ? 'mini' : 'open'),
-  )
+  const [anchorsOpen, setAnchorsOpen] = useState(() => localStorage.getItem('tv_anchor_open') === '1')
+  const [infoOpen, setInfoOpen] = useState(() => localStorage.getItem('tv_info_open') !== '0')
   const [fit, setFit] = useState(() => localStorage.getItem('tv_fit') || 'contain')
   const [reviewOpen, setReviewOpen] = useState(false)
   const [origView, setOrigView] = useState(null)
+  const [mode, setMode] = useState('view')
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [anoRefresh, setAnoRefresh] = useState(0)
+  const [anomsBySeq, setAnomsBySeq] = useState({})
+  const [locateTarget, setLocateTarget] = useState(null)
 
   const refreshMeta = useCallback(() => {
     api.overview(tunnelId).then(setOv).catch(() => {})
@@ -46,9 +51,31 @@ export default function ViewerPage({ tunnelId, active }) {
     ensureWindow(tunnelId, 0, cacheRef.current, pendingRef.current, setGroups)
   }, [tunnelId])
 
+  // 異狀摘要：里程軌 tooltip 與總覽頁共用
+  useEffect(() => {
+    let alive = true
+    api.anomalies(tunnelId).then((rows) => {
+      if (!alive) return
+      const bySeq = {}
+      for (const r of rows) {
+        if (r.group_seq == null) continue
+        if (!(r.group_seq in bySeq)) bySeq[r.group_seq] = { photo_id: r.photo_id, types: [] }
+        if (!bySeq[r.group_seq].types.includes(r.type_name)) bySeq[r.group_seq].types.push(r.type_name)
+      }
+      setAnomsBySeq(bySeq)
+    }).catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [tunnelId, anoRefresh])
+
   useTunnelSocket(tunnelId, (msg) => {
     if (!msg.type) return
     refreshMeta()
+    if (msg.type === 'annotation_updated') {
+      setAnoRefresh((k) => k + 1)
+      return
+    }
     if (['realigned', 'merged', 'camera_updated', 'layout_updated', 'photo_updated'].includes(msg.type)) {
       cacheRef.current.clear()
       pendingRef.current.clear()
@@ -105,6 +132,7 @@ export default function ViewerPage({ tunnelId, active }) {
         setReviewOpen(false)
         setDialogOpen(false)
         setSearchOpen(false)
+        setHelpOpen(false)
         return
       }
       if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
@@ -114,6 +142,12 @@ export default function ViewerPage({ tunnelId, active }) {
         return
       }
       if (origView || dialogOpen || searchOpen || reviewOpen) return
+      if (e.key === '?') {
+        setHelpOpen((v) => !v)
+        return
+      }
+      if (helpOpen) return
+      if (mode === 'anomalies') return
       if (e.key === 'ArrowLeft') goto(current - 1)
       else if (e.key === 'ArrowRight') goto(current + 1)
       else if (e.key === 'Home') goto(0)
@@ -123,17 +157,34 @@ export default function ViewerPage({ tunnelId, active }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, ov, origView, dialogOpen, searchOpen, reviewOpen, current, total, goto])
+  }, [active, ov, origView, dialogOpen, searchOpen, reviewOpen, helpOpen, mode, current, total, goto])
 
-  const setRail = (patch) => {
-    setRailTab((prevTab) => patch.tab ?? prevTab)
-    setRailMode((prevMode) => {
-      const next = patch.mode ?? prevMode
-      localStorage.setItem('tv_rail_mode', next)
-      return next
-    })
-    if (patch.tab) localStorage.setItem('tv_rail_tab', patch.tab)
+  const togglePanel = (which) => {
+    if (which === 'anchors') {
+      setAnchorsOpen((v) => {
+        localStorage.setItem('tv_anchor_open', v ? '0' : '1')
+        return !v
+      })
+    } else {
+      setInfoOpen((v) => {
+        localStorage.setItem('tv_info_open', !v ? '1' : '0')
+        return !v
+      })
+    }
   }
+
+  const locateInViewer = (row) => {
+    if (row.group_seq == null) return
+    setMode('view')
+    goto(row.group_seq)
+    setLocateTarget({ photoId: row.photo_id, seq: row.group_seq })
+    setTimeout(() => setLocateTarget(null), 2200)
+  }
+
+  const onAnnotationChanged = useCallback(() => {
+    refreshMeta()
+    setAnoRefresh((k) => k + 1)
+  }, [refreshMeta])
 
   if (!ov) {
     return (
@@ -164,6 +215,10 @@ export default function ViewerPage({ tunnelId, active }) {
         >
           {fit === 'contain' ? '▭ 完整' : '▩ 填滿'}
         </button>
+        <div className="mode-seg">
+          <button type="button" className={mode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>檢視</button>
+          <button type="button" className={mode === 'anomalies' ? 'on' : ''} onClick={() => setMode('anomalies')}>異狀總覽</button>
+        </div>
         <div className="vread mono">
           <span className="vread-seq">
             群組 <b>{String(current + 1).padStart(4, '0')}</b> / {ov.group_count}
@@ -175,57 +230,42 @@ export default function ViewerPage({ tunnelId, active }) {
           {anchoredHere && <span className="chip blue">🔒 已錨定</span>}
         </div>
         <div className="vspacer" />
-        <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>檢閱邊界（M）</button>
+        <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>合併邊界（M）</button>
         <button
           type="button"
-          className={`btn small ${railTab === 'anchors' && railMode !== 'hidden' ? 'primary' : ''}`}
-          onClick={() => setRail(railTab === 'anchors' && railMode === 'open' ? { mode: 'hidden' } : { tab: 'anchors', mode: 'open' })}
+          className={`btn small ${anchorsOpen ? 'primary' : ''}`}
+          onClick={() => togglePanel('anchors')}
         >錨點列</button>
         <button
           type="button"
-          className={`btn small ${railTab === 'info' && railMode !== 'hidden' ? 'primary' : ''}`}
-          onClick={() => setRail(railTab === 'info' && railMode === 'open' ? { mode: 'hidden' } : { tab: 'info', mode: 'open' })}
-        >
-          資訊{info?.flagged?.length ? ` (${info.flagged.length}⚠)` : ''}
-        </button>
+          className={`btn small ${infoOpen ? 'primary' : ''}`}
+          onClick={() => togglePanel('info')}
+        >資訊</button>
+        <button type="button" className="btn small ghost" title="說明與快捷鍵（?）" onClick={() => setHelpOpen(true)}>?</button>
       </div>
 
-      <div className="vmid">
-        <CameraGrid
-          tunnelId={tunnelId}
-          group={group}
-          cameras={ov.cameras}
-          cameraMeta={cameraMeta}
-          layoutCols={layoutCols}
-          fit={fit}
-          anomalyPaths={anomalyPaths(info)}
-          onOpenOriginal={(photo) => openOriginal(photo)}
-          onRotate={(pid, angle) =>
-            api.setPhotoRotation(tunnelId, pid, angle)
-              .then(refreshMeta)
-              .then(() => toast('已旋轉'))
-              .catch((e) => toast(e.message, 'err'))
-          }
-        />
-        {railMode !== 'hidden' && (
-          <div className={`siderail ${railMode}`}>
-            <div className="siderail-tabs">
-              <button type="button" className={railTab === 'anchors' ? 'on' : ''} onClick={() => setRail({ tab: 'anchors', mode: 'open' })}>⚓</button>
-              <button type="button" className={railTab === 'info' ? 'on' : ''} onClick={() => setRail({ tab: 'info', mode: 'open' })}>ℹ</button>
-              {railMode === 'open' && (
-                <>
-                  {info?.flagged?.length > 0 && railTab === 'info' && (
-                    <span className="chip amber rail-badge">{info.flagged.length}</span>
-                  )}
-                  <span className="vspacer" />
-                  <button type="button" title="收合" onClick={() => setRail({ mode: 'mini' })}>»</button>
-                </>
-              )}
-              {railMode === 'mini' && <button type="button" title="展開" onClick={() => setRail({ mode: 'open' })}>«</button>}
-              <button type="button" title="隱藏" onClick={() => setRail({ mode: 'hidden' })}>×</button>
-            </div>
-            <div className="siderail-body">
-              {railTab === 'anchors' ? (
+      {mode === 'view' ? (
+        <>
+          <div className="vmid">
+            <CameraGrid
+              tunnelId={tunnelId}
+              group={group}
+              cameras={ov.cameras}
+              cameraMeta={cameraMeta}
+              layoutCols={layoutCols}
+              fit={fit}
+              anomalyPaths={anomalyPaths(info)}
+              highlightPhotoId={current === locateTarget?.seq ? locateTarget?.photoId : null}
+              onOpenOriginal={(photo) => openOriginal(photo)}
+              onRotate={(pid, angle) =>
+                api.setPhotoRotation(tunnelId, pid, angle)
+                  .then(refreshMeta)
+                  .then(() => toast('已旋轉'))
+                  .catch((e) => toast(e.message, 'err'))
+              }
+            />
+            {anchorsOpen && (
+              <div className="siderail open anchor-panel">
                 <AnchorDrawer
                   open
                   anchors={anchors}
@@ -238,35 +278,49 @@ export default function ViewerPage({ tunnelId, active }) {
                       .catch((e) => toast(e.message, 'err'))
                   }
                 />
-              ) : (
+              </div>
+            )}
+            {infoOpen && (
+              <div className="siderail open info-panel">
                 <TunnelInfoPanel
                   tunnelId={tunnelId}
                   info={info}
                   onChanged={refreshMeta}
-                  onJump={jumpFromFlag(goto)}
-                  onJumpSeq={goto}
                   currentGroupCount={ov.group_count}
                 />
-              )}
-            </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <ScrubberRail
-        est={ov.groups.est}
-        missing={ov.groups.missing}
-        anchored={ov.groups.anchored}
-        anomaly={ov.groups.anomaly}
-        startM={ov.start_m}
-        endM={ov.end_m}
-        current={current}
-        onJump={goto}
-      />
+          <ScrubberRail
+            tunnelId={tunnelId}
+            est={ov.groups.est}
+            missing={ov.groups.missing}
+            anchored={ov.groups.anchored}
+            anomaly={ov.groups.anomaly}
+            ano={ov.groups.ano}
+            anomsBySeq={anomsBySeq}
+            startM={ov.start_m}
+            endM={ov.end_m}
+            current={current}
+            onJump={goto}
+            onOpenHelp={() => setHelpOpen(true)}
+          />
 
-      <div className="vhint hint">
-        ←/→ 群組 · Enter 錨點 · M 檢閱邊界 · Home/End 首/末 · 點照片開原圖 · Ctrl+G 跳轉
-      </div>
+          <div className="vhint hint">
+            ←/→ 群組 · Enter 錨點 · M 合併邊界 · A 異狀標註（原圖內） · Home/End 首/末 · Ctrl+G 跳轉 · ? 說明
+          </div>
+        </>
+      ) : (
+        <div className="vmid">
+          <AnomalyOverview
+            tunnelId={tunnelId}
+            refreshKey={anoRefresh}
+            onLocate={locateInViewer}
+            onMetaRefresh={refreshMeta}
+          />
+        </div>
+      )}
 
       {dialogOpen && (
         <AnchorDialog
@@ -301,29 +355,19 @@ export default function ViewerPage({ tunnelId, active }) {
         />
       )}
 
+      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+
       {origView && (
         <OriginalViewer
           tunnelId={tunnelId}
           photos={origView.photos}
           startIndex={origView.index}
           onClose={() => setOrigView(null)}
+          onAnnotationChanged={onAnnotationChanged}
         />
       )}
     </div>
   )
-}
-
-function jumpFromFlag(goto) {
-  return (kind, item) => {
-    if (kind === 'flag' && item?.group_seq != null) {
-      goto(item.group_seq)
-      return
-    }
-    if (item?.photo_id) {
-      // fallback：以快取搜尋所在群組
-      return
-    }
-  }
 }
 
 function estOf(ov, group, current) {

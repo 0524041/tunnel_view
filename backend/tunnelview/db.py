@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
+
+# 全工作區共用的異狀類型（跨隧道專案）
+BUILTIN_DEFECT_TYPES = ("裂縫", "滲漏水", "剝落", "白華", "鋼筋外露")
 
 _SCHEMA_TUNNEL = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -54,7 +57,8 @@ CREATE TABLE IF NOT EXISTS photos (
     manual_missing INTEGER NOT NULL DEFAULT 0,
     rotation_override INTEGER CHECK (rotation_override IN (0, 90, 180, 270)),
     review_result TEXT CHECK (review_result IN ('ok', 'anomaly')),
-    aspect_anomaly INTEGER NOT NULL DEFAULT 0
+    aspect_anomaly INTEGER NOT NULL DEFAULT 0,
+    note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_photos_group ON photos(group_id);
 CREATE INDEX IF NOT EXISTS idx_photos_camera ON photos(camera_id);
@@ -66,6 +70,25 @@ CREATE TABLE IF NOT EXISTS anchors (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS photo_anomalies (
+    id INTEGER PRIMARY KEY,
+    photo_id INTEGER NOT NULL REFERENCES photos(id),
+    type_id INTEGER NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_anomalies_photo ON photo_anomalies(photo_id);
+"""
+
+_ANOMALIES_DDL = """
+CREATE TABLE IF NOT EXISTS photo_anomalies (
+    id INTEGER PRIMARY KEY,
+    photo_id INTEGER NOT NULL REFERENCES photos(id),
+    type_id INTEGER NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
 """
 
 
@@ -135,6 +158,14 @@ def migrate_if_needed(conn: sqlite3.Connection) -> None:
             meta_keys = {r[0] for r in conn.execute("SELECT key FROM meta")}
             if "layout_cols" not in meta_keys:
                 conn.execute("INSERT INTO meta (key, value) VALUES ('layout_cols', 'auto')")
+
+            photo_cols2 = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+            if "note" not in photo_cols2:
+                conn.execute("ALTER TABLE photos ADD COLUMN note TEXT")
+            conn.execute(_ANOMALIES_DDL)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_anomalies_photo ON photo_anomalies(photo_id)"
+            )
 
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
@@ -224,7 +255,77 @@ class Workspace:
             )
             """
         )
-        conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._ensure_defect_types(conn)
+
+    @staticmethod
+    def _ensure_defect_types(conn: sqlite3.Connection) -> None:
+        """共用異狀類型表＋內建種子（冪等，既有/新工作區皆適用）。"""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS defect_types (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                archived INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO defect_types (name) VALUES (?)",
+            [(name,) for name in BUILTIN_DEFECT_TYPES],
+        )
+
+    def defect_types(self) -> list[dict]:
+        with self._connect(self.index_path) as conn:
+            self._ensure_defect_types(conn)
+            rows = conn.execute(
+                "SELECT id, name, archived FROM defect_types ORDER BY id"
+            ).fetchall()
+        return [{"id": r["id"], "name": r["name"], "archived": bool(r["archived"])} for r in rows]
+
+    def add_defect_type(self, name: str) -> dict:
+        name = name.strip()
+        if not name:
+            raise ValueError("類型名稱不可空白")
+        with self._connect(self.index_path) as conn:
+            self._ensure_defect_types(conn)
+            existing = conn.execute(
+                "SELECT id, name FROM defect_types WHERE name = ? COLLATE NOCASE", (name,)
+            ).fetchone()
+            if existing is not None:
+                raise KeyError(f"類型已存在：{existing['name']}")
+            try:
+                cur = conn.execute("INSERT INTO defect_types (name) VALUES (?)", (name,))
+            except sqlite3.IntegrityError:
+                raise KeyError(f"類型已存在：{name}")
+            row = conn.execute(
+                "SELECT id, name, archived FROM defect_types WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+        return {"id": row["id"], "name": row["name"], "archived": bool(row["archived"])}
+
+    def remove_defect_type(self, type_id: int) -> str:
+        """刪除共用類型：未被任何隧道異狀引用→硬刪；已被使用→封存。回傳動作字串。"""
+        with self._connect(self.index_path) as conn:
+            self._ensure_defect_types(conn)
+            row = conn.execute(
+                "SELECT id FROM defect_types WHERE id = ?", (type_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(type_id)
+        in_use = False
+        for t in self.list_tunnels():
+            with self.open_tunnel(t.tunnel_id) as tconn:
+                if tconn.execute(
+                    "SELECT 1 FROM photo_anomalies WHERE type_id = ? LIMIT 1", (type_id,)
+                ).fetchone():
+                    in_use = True
+                    break
+        with self._connect(self.index_path) as conn:
+            if in_use:
+                conn.execute("UPDATE defect_types SET archived = 1 WHERE id = ?", (type_id,))
+                return "archived"
+            conn.execute("DELETE FROM defect_types WHERE id = ?", (type_id,))
+        return "deleted"
 
     def _connect(self, path: Path) -> sqlite3.Connection:
         conn = sqlite3.connect(str(path), check_same_thread=False)
