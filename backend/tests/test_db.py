@@ -91,7 +91,7 @@ class TestCreateTunnel:
         finally:
             conn.close()
 
-    def test_anchor_unique_per_group(self, ws):
+    def test_anchor_carrier_unique(self, ws):
         rec = ws.create_tunnel(
             name="t", start_m=0, end_m=1000, cameras=CAMERAS, tolerance_seconds=2.0
         )
@@ -100,9 +100,13 @@ class TestCreateTunnel:
             conn.execute(
                 "INSERT INTO photo_groups (seq, corrected_time, est_mileage_m, missing_count) VALUES (0, '2026-01-01T00:00:00', 0, 0)"
             )
-            conn.execute("INSERT INTO anchors (group_seq, mileage_m) VALUES (0, 100)")
+            conn.execute(
+                "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source) "
+                "VALUES (1, 1, 'a.JPG', '2026-01-01T00:00:00', '2026-01-01T00:00:00', 'exif')"
+            )
+            conn.execute("INSERT INTO anchors (carrier_photo_id, mileage_m) VALUES (1, 100)")
             with pytest.raises(sqlite3.IntegrityError):
-                conn.execute("INSERT INTO anchors (group_seq, mileage_m) VALUES (0, 200)")
+                conn.execute("INSERT INTO anchors (carrier_photo_id, mileage_m) VALUES (1, 200)")
         finally:
             conn.close()
 

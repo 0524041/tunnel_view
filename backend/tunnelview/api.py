@@ -10,18 +10,19 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from .db import Workspace
 from .interp import AnchorOrderError, AnchorRangeError
 from .importer import CameraInput, ImportRequest, TunnelImporter
-from .service import TunnelService
+from .service import MergeConflict, TunnelService
 
 
 class CameraBody(BaseModel):
     name: str
     folder: str
+    rotation: int = 0
 
 
 class ImportBody(BaseModel):
@@ -34,6 +35,45 @@ class ImportBody(BaseModel):
 
 class AnchorBody(BaseModel):
     mileage_m: int
+
+
+class RealignBody(BaseModel):
+    tolerance_seconds: float = Field(gt=0)
+
+
+class MergeBody(BaseModel):
+    direction: str
+    keep: str | None = None
+
+
+class CameraRotationBody(BaseModel):
+    rotation: int
+
+
+class PhotoRotationBody(BaseModel):
+    angle: int
+
+
+def _needs_exif_transpose(path: Path) -> bool:
+    try:
+        with Image.open(path) as im:
+            return int((im.getexif() or {}).get(274, 1)) not in (0, 1)
+    except Exception:
+        return False
+
+
+def _invalidate_cache(root: Path, tid: int, photo_id: int | None = None) -> None:
+    cache_dir = root / ".thumb_cache"
+    if not cache_dir.is_dir():
+        return
+    prefix = f"{tid}_"
+    for f in cache_dir.iterdir():
+        if (
+            f.is_file()
+            and f.name.startswith(prefix)
+            and (photo_id is None or f"_{photo_id}_" in f.name)
+        ):
+            f.unlink(missing_ok=True)
 
 
 class _Hub:
@@ -92,27 +132,25 @@ def create_app(workspace: Workspace) -> FastAPI:
             for t in workspace.list_tunnels()
         ]
 
-    @app.post("/api/tunnels/preview")
-    def preview_import(body: ImportBody):
-        req = ImportRequest(
+    def _to_req(body: ImportBody) -> ImportRequest:
+        return ImportRequest(
             name=body.name,
             start_m=body.start_m,
             end_m=body.end_m,
             tolerance_seconds=body.tolerance_seconds,
-            cameras=[CameraInput(name=c.name, folder=c.folder) for c in body.cameras],
+            cameras=[
+                CameraInput(name=c.name, folder=c.folder, rotation=c.rotation)
+                for c in body.cameras
+            ],
         )
-        return importer.preview(req)
+
+    @app.post("/api/tunnels/preview")
+    def preview_import(body: ImportBody):
+        return importer.preview(_to_req(body))
 
     @app.post("/api/tunnels")
     def create_tunnel(body: ImportBody):
-        req = ImportRequest(
-            name=body.name,
-            start_m=body.start_m,
-            end_m=body.end_m,
-            tolerance_seconds=body.tolerance_seconds,
-            cameras=[CameraInput(name=c.name, folder=c.folder) for c in body.cameras],
-        )
-        info = importer.commit(req)
+        info = importer.commit(_to_req(body))
         return {"tunnel_id": info.tunnel_id}
 
     @app.get("/api/tunnels/{tid}/meta")
@@ -156,20 +194,120 @@ def create_app(workspace: Workspace) -> FastAPI:
         hub.broadcast(tid, {"type": "anchor_delete", "group_seq": seq})
         return {"ok": True}
 
+    @app.get("/api/tunnels/{tid}/info")
+    def tunnel_info(tid: int):
+        return service.info(tid)
+
+    @app.post("/api/tunnels/{tid}/photos/{pid}/confirm_flag")
+    def confirm_flag(tid: int, pid: int):
+        try:
+            service.confirm_flag(tid, pid)
+        except KeyError:
+            raise HTTPException(404, "照片不存在")
+        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        return {"ok": True}
+
+    @app.post("/api/tunnels/{tid}/photos/{pid}/mark_missing")
+    def mark_missing(tid: int, pid: int):
+        try:
+            service.mark_missing_photo(tid, pid)
+        except KeyError:
+            raise HTTPException(404, "照片不存在")
+        _invalidate_cache(workspace.root, tid)
+        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        return {"ok": True}
+
+    @app.post("/api/tunnels/{tid}/photos/{pid}/restore")
+    def restore_missing(tid: int, pid: int):
+        try:
+            service.restore_missing_photo(tid, pid)
+        except KeyError:
+            raise HTTPException(404, "照片不存在或未改判")
+        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        return {"ok": True}
+
+    @app.post("/api/tunnels/{tid}/realign")
+    def realign_dry_run(tid: int, body: RealignBody):
+        return service.realign_preview(tid, body.tolerance_seconds)
+
+    @app.post("/api/tunnels/{tid}/realign/apply")
+    async def realign_apply(tid: int, body: RealignBody):
+        result = service.realign_apply(tid, body.tolerance_seconds)
+        _invalidate_cache(workspace.root, tid)
+        hub.broadcast(tid, {"type": "realigned"})
+        return result
+
+    @app.post("/api/tunnels/{tid}/groups/{seq}/merge")
+    async def merge_group(tid: int, seq: int, body: MergeBody):
+        try:
+            result = service.merge_group(tid, seq, body.direction, body.keep)
+        except MergeConflict as e:
+            raise HTTPException(409, detail={"message": str(e), "conflict_cameras": e.conflict_cameras})
+        except KeyError:
+            raise HTTPException(404, "群組不存在")
+        hub.broadcast(tid, {"type": "merged", **result})
+        return result
+
+    @app.put("/api/tunnels/{tid}/cameras/{seq}")
+    def set_camera_rotation(tid: int, seq: int, body: CameraRotationBody):
+        if body.rotation % 90 != 0 or not (0 <= body.rotation <= 270):
+            raise HTTPException(400, "旋轉角度僅接受 0/90/180/270")
+        try:
+            service.set_camera_rotation(tid, seq, body.rotation)
+        except KeyError:
+            raise HTTPException(404, "相機不存在")
+        _invalidate_cache(workspace.root, tid)
+        hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
+        return {"ok": True}
+
+    @app.put("/api/tunnels/{tid}/photos/{pid}/rotation")
+    def set_photo_rotation(tid: int, pid: int, body: PhotoRotationBody):
+        if body.angle % 90 != 0 or not (0 <= body.angle <= 270):
+            raise HTTPException(400, "旋轉角度僅接受 0/90/180/270")
+        try:
+            service.set_photo_rotation(tid, pid, body.angle)
+        except KeyError:
+            raise HTTPException(404, "照片不存在")
+        _invalidate_cache(workspace.root, tid, photo_id=pid)
+        hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
+        return {"ok": True}
+
     @app.get("/api/tunnels/{tid}/photos/{photo_id}")
     def photo(tid: int, photo_id: int, w: int | None = None):
-        path = _safe_photo(service, tid, photo_id)
-        if w is None:
+        try:
+            info = service.photo_render_info(tid, photo_id)
+        except KeyError:
+            raise HTTPException(404, "照片不存在")
+        path: Path = info["path"]
+        extra: int = info["extra_rotation"]
+        if not Path(path).exists():
+            raise HTTPException(404, "照片檔案遺失（原檔可能被移動）")
+
+        needs_transpose = _needs_exif_transpose(path)
+        fast_path = w is None and extra == 0 and not needs_transpose
+        if fast_path:
             return FileResponse(path, media_type="image/jpeg")
-        cache = Path(workspace.root) / ".thumb_cache" / f"{tid}_{photo_id}_{w}.jpg"
+
+        suffix = "orig" if w is None else str(w)
+        cache_dir = Path(workspace.root) / ".thumb_cache"
+        cache = cache_dir / f"{tid}_{photo_id}_{suffix}_{extra}.jpg"
         if not cache.exists():
             img = Image.open(path)
-            img.draft("RGB", (w * 2, w * 2))
-            img = img.convert("RGB")
-            ratio = w / img.width
-            resized = img.resize((w, max(1, round(img.height * ratio))), Image.BILINEAR)
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            resized.save(cache, "JPEG", quality=87)
+            if needs_transpose:
+                img = ImageOps.exif_transpose(img)
+            else:
+                img.draft("RGB", (w * 2, w * 2)) if w else None
+                img = img.convert("RGB")
+            if extra:
+                img = img.rotate(-extra, expand=True)
+            if w is not None:
+                ratio = w / img.width
+                img = img.resize((w, max(1, round(img.height * ratio))), Image.BILINEAR)
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                img.save(cache, "JPEG", quality=87)
+            else:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                img.save(cache, "JPEG", quality=92)
         return FileResponse(cache, media_type="image/jpeg")
 
     @app.websocket("/ws/tunnels/{tid}")
@@ -196,13 +334,3 @@ def _find_dist():
     if candidate.is_dir():
         return candidate
     return None
-
-
-def _safe_photo(service: TunnelService, tid: int, photo_id: int) -> Path:
-    try:
-        path = service.photo_file(tid, photo_id)
-    except KeyError:
-        raise HTTPException(404, "照片不存在")
-    if not Path(path).exists():
-        raise HTTPException(404, "照片檔案遺失（原檔可能被移動）")
-    return Path(path)

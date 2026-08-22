@@ -61,4 +61,72 @@ export const api = {
 
   photoUrl: (tid, photoId, w) =>
     `/api/tunnels/${tid}/photos/${photoId}${w ? `?w=${w}` : ''}`,
+
+  info: (tid) => fetch(`/api/tunnels/${tid}/info`).then(handle),
+
+  confirmFlag: async (tid, pid) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/confirm_flag`, { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  markMissing: async (tid, pid) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/mark_missing`, { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  restorePhoto: async (tid, pid) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/restore`, { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  realignPreview: (tid, tolerance) =>
+    fetch(`/api/tunnels/${tid}/realign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tolerance_seconds: tolerance }),
+    }).then(handle),
+
+  realignApply: async (tid, tolerance) => {
+    const r = await fetch(`/api/tunnels/${tid}/realign/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tolerance_seconds: tolerance }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  },
+
+  mergeGroup: async (tid, seq, direction, keep) => {
+    const r = await fetch(`/api/tunnels/${tid}/groups/${seq}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction, keep: keep ?? null }),
+    })
+    if (r.status === 409) {
+      const body = await r.json()
+      const err = new Error(body.detail?.message || '需裁決')
+      err.conflictCameras = body.detail?.conflict_cameras || []
+      throw err
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  },
+
+  setCameraRotation: async (tid, seq, rotation) => {
+    const r = await fetch(`/api/tunnels/${tid}/cameras/${seq}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rotation }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  setPhotoRotation: async (tid, pid, angle) => {
+    const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/rotation`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ angle }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
 }

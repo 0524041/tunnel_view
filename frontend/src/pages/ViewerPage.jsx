@@ -6,9 +6,13 @@ import ScrubberRail from '../components/ScrubberRail'
 import AnchorDrawer from '../components/AnchorDrawer'
 import AnchorDialog from '../components/AnchorDialog'
 import MileageSearch from '../components/MileageSearch'
+import TunnelInfoPanel from '../components/TunnelInfoPanel'
+import ReviewMode from '../components/ReviewMode'
+import OriginalViewer from '../components/OriginalViewer'
 
 export default function ViewerPage({ tunnelId, active }) {
   const [ov, setOv] = useState(null)
+  const [info, setInfo] = useState(null)
   const [anchors, setAnchors] = useState([])
   const [current, setCurrent] = useState(0)
   const [groups, setGroups] = useState(() => new Map())
@@ -16,11 +20,14 @@ export default function ViewerPage({ tunnelId, active }) {
   const pendingRef = useRef(new Set())
   const [dialogOpen, setDialogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [drawerOpen, setDrawerOpen] = useState(true)
+  const [panel, setPanel] = useState('anchors') // 'anchors' | 'info' | 'none'
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [origView, setOrigView] = useState(null) // { photos: [...decorated], index }
 
   const refreshMeta = useCallback(() => {
     api.overview(tunnelId).then(setOv).catch(() => {})
     api.anchors(tunnelId).then(setAnchors).catch(() => {})
+    api.info(tunnelId).then(setInfo).catch(() => {})
   }, [tunnelId])
 
   useEffect(() => {
@@ -30,10 +37,20 @@ export default function ViewerPage({ tunnelId, active }) {
     setGroups(new Map())
     api.overview(tunnelId).then(setOv).catch(() => {})
     api.anchors(tunnelId).then(setAnchors).catch(() => {})
+    api.info(tunnelId).then(setInfo).catch(() => {})
     ensureWindow(tunnelId, 0, cacheRef.current, pendingRef.current, setGroups)
   }, [tunnelId])
 
-  useTunnelSocket(tunnelId, refreshMeta)
+  useTunnelSocket(tunnelId, (msg) => {
+    if (!msg.type) return
+    refreshMeta()
+    if (['realigned', 'merged'].includes(msg.type)) {
+      cacheRef.current.clear()
+      pendingRef.current.clear()
+      setGroups(new Map())
+      ensureWindow(tunnelId, current, cacheRef.current, pendingRef.current, setGroups)
+    }
+  })
 
   const total = ov?.group_count ?? 0
 
@@ -60,29 +77,73 @@ export default function ViewerPage({ tunnelId, active }) {
     }
   }, [current, groups, ov, active, tunnelId])
 
+  const openOriginal = useCallback(
+    (photo) => {
+      const g = groups.get(current)
+      if (!g) return
+      const decorated = g.photos.map((p) => ({
+        ...p,
+        __cameraName: ov.cameras[p.camera_seq],
+        __groupSeq: g.seq,
+      }))
+      const index = Math.max(0, decorated.findIndex((p) => p.photo_id === photo.photo_id))
+      setOrigView({ photos: decorated, index })
+    },
+    [groups, current, ov],
+  )
+
+  const jumpFromFlag = useCallback(
+    (kind, item) => {
+      if (kind === 'flag' && item?.photo_id) {
+        for (const [seq, g] of cacheRef.current.entries()) {
+          if (g.photos.some((p) => p.photo_id === item.photo_id)) {
+            goto(seq)
+            return
+          }
+        }
+      }
+      refreshMeta()
+    },
+    [goto, refreshMeta],
+  )
+
+  const anomalyPaths = (() => {
+    const names = new Map((info?.cameras ?? []).map((c) => [c.name, c.seq]))
+    return new Set(
+      (info?.report?.aspect_anomalies ?? [])
+        .map((a) => `${names.get(a.camera)}:${a.rel_path}`)
+        .filter((k) => !k.startsWith('undefined')),
+    )
+  })()
+
   useEffect(() => {
     if (!active || !ov) return
     const onKey = (e) => {
       if (e.key === 'Escape') {
+        setOrigView(null)
+        setReviewOpen(false)
         setDialogOpen(false)
         setSearchOpen(false)
         return
       }
-      if (dialogOpen || searchOpen) return
-      if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
+      if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') {
+        e.preventDefault()
+        setSearchOpen(true)
+        return
+      }
+      if (origView || dialogOpen || searchOpen) return
+      if (reviewOpen) return
       if (e.key === 'ArrowLeft') goto(current - 1)
       else if (e.key === 'ArrowRight') goto(current + 1)
       else if (e.key === 'Home') goto(0)
       else if (e.key === 'End') goto(total - 1)
       else if (e.key === 'Enter') setDialogOpen(true)
-      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') {
-        e.preventDefault()
-        setSearchOpen(true)
-      }
+      else if (e.key.toLowerCase() === 'm') setReviewOpen(true)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, ov, dialogOpen, searchOpen, current, total, goto])
+  }, [active, ov, origView, dialogOpen, searchOpen, reviewOpen, current, total, goto])
 
   if (!ov) {
     return (
@@ -110,20 +171,54 @@ export default function ViewerPage({ tunnelId, active }) {
           {anchoredHere && <span className="chip blue">🔒 已錨定</span>}
         </div>
         <div className="vspacer" />
-        <button type="button" className="btn small" onClick={() => setDrawerOpen((o) => !o)}>
-          {drawerOpen ? '隱藏錨點列' : `錨點列 (${anchors.length})`}
+        <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>
+          檢閱邊界（M）
+        </button>
+        <button
+          type="button"
+          className={`btn small ${panel === 'anchors' ? 'primary' : ''}`}
+          onClick={() => setPanel((p) => (p === 'anchors' ? 'none' : 'anchors'))}
+        >
+          錨點列 ({anchors.length})
+        </button>
+        <button
+          type="button"
+          className={`btn small ${panel === 'info' ? 'primary' : ''}`}
+          onClick={() => setPanel((p) => (p === 'info' ? 'none' : 'info'))}
+        >
+          資訊{info?.flagged?.length ? ` (${info.flagged.length}⚠)` : ''}
         </button>
       </div>
 
       <div className="vmid">
-        <CameraGrid tunnelId={tunnelId} group={group} cameras={ov.cameras} />
-        <AnchorDrawer
-          open={drawerOpen}
-          anchors={anchors}
-          current={current}
-          onJump={(seq) => goto(seq)}
-          onDelete={(seq) => api.deleteAnchor(tunnelId, seq).catch(() => {})}
+        <CameraGrid
+          tunnelId={tunnelId}
+          group={group}
+          cameras={ov.cameras}
+          anomalyPaths={anomalyPaths}
+          onOpenOriginal={(photo) => openOriginal(photo)}
+          onRotate={(pid, angle) =>
+            api.setPhotoRotation(tunnelId, pid, angle).then(refreshMeta)
+          }
         />
+        {panel === 'anchors' ? (
+          <AnchorDrawer
+            open
+            anchors={anchors}
+            current={current}
+            onJump={(seq) => goto(seq)}
+            onDelete={(s) => api.deleteAnchor(tunnelId, s).then(refreshMeta).catch(() => {})}
+          />
+        ) : (
+          panel === 'info' && (
+            <TunnelInfoPanel
+              tunnelId={tunnelId}
+              info={info}
+              onChanged={refreshMeta}
+              onJump={jumpFromFlag}
+            />
+          )
+        )}
       </div>
 
       <ScrubberRail
@@ -137,7 +232,7 @@ export default function ViewerPage({ tunnelId, active }) {
       />
 
       <div className="vhint hint">
-        ←/→ 群組 · Enter 錨點 · Home/End 首/末 · 滾輪縮放（同步）· 拖曳平移 · 雙擊復原 · Ctrl+G 跳轉
+        ←/→ 群組 · Enter 錨點 · M 檢閱邊界 · Home/End 首/末 · 點照片開原圖 · Ctrl+G 跳轉
       </div>
 
       {dialogOpen && (
@@ -160,6 +255,25 @@ export default function ViewerPage({ tunnelId, active }) {
             })
           }}
           onClose={() => setSearchOpen(false)}
+        />
+      )}
+
+      {reviewOpen && (
+        <ReviewMode
+          tunnelId={tunnelId}
+          current={current}
+          cameras={ov.cameras}
+          onClose={() => setReviewOpen(false)}
+          onChanged={refreshMeta}
+        />
+      )}
+
+      {origView && (
+        <OriginalViewer
+          tunnelId={tunnelId}
+          photos={origView.photos}
+          startIndex={origView.index}
+          onClose={() => setOrigView(null)}
         />
       )}
     </div>

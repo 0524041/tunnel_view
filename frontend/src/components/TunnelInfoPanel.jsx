@@ -1,0 +1,220 @@
+import { useState } from 'react'
+import { api } from '../lib/api'
+import { formatMileage } from '../lib/mileage'
+
+const ROT_OPTIONS = [0, 90, 180, 270]
+
+export default function TunnelInfoPanel({ tunnelId, info, onJump, onChanged }) {
+  const [tab, setTab] = useState('report')
+  const [tolerance, setTolerance] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  if (!info) return <aside className="drawer"><p className="hint" style={{ padding: 14 }}>載入中…</p></aside>
+
+  const report = info.report || {}
+  const currentTol = tolerance ?? report.tolerance_seconds ?? 2.0
+
+  const runPreview = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      setPreview(await api.realignPreview(tunnelId, Number(currentTol)))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const applyRealign = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      await api.realignApply(tunnelId, Number(currentTol))
+      setPreview(null)
+      onChanged?.()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <aside className="drawer info-drawer">
+      <div className="info-tabs">
+        {[
+          ['report', `報告`],
+          ['flagged', `待檢查 ${info.flagged.length || ''}`],
+          ['missing', `已改判 ${info.manual_missing.length || ''}`],
+          ['cams', '相機'],
+        ].map(([k, label]) => (
+          <button type="button" key={k} className={`info-tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="drawer-list info-body">
+        {tab === 'report' && (
+          <>
+            <Section title="匯入報告">
+              <div className="kv mono">
+                <span>容差</span><b>{report.tolerance_seconds ?? '—'}s</b>
+                <span>群組數</span><b>{report.group_count ?? '—'}</b>
+                <span>待檢查</span><b>{report.flagged_count ?? 0}</b>
+                {report.imported_at && <span>建立於</span>}
+                {report.imported_at && <b>{report.imported_at}</b>}
+              </div>
+              {(report.cameras || []).length > 0 && (
+                <table className="pv-table">
+                  <thead><tr><th>視角</th><th>張數</th><th>Δt</th></tr></thead>
+                  <tbody>
+                    {report.cameras.map((c, i) => (
+                      <tr key={c.name}>
+                        <td>{c.name}</td>
+                        <td className="mono">{c.photo_count}</td>
+                        <td className="mono">{i === 0 ? '基準' : `${c.offset_seconds >= 0 ? '+' : ''}${Number(c.offset_seconds).toFixed(2)}s`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div className="dist-row">
+                {Object.entries(report.missing_distribution || {}).map(([m, n]) => (
+                  <span key={m} className={`chip ${Number(m) > 0 ? 'red' : 'blue'}`}>缺 {m} × {n}</span>
+                ))}
+              </div>
+            </Section>
+
+            <Section title="重新對齊（時間容差）">
+              <div className="realign-row">
+                <input
+                  type="number"
+                  className="field mono"
+                  min="0.5"
+                  step="0.5"
+                  value={currentTol}
+                  onChange={(e) => setTolerance(parseFloat(e.target.value))}
+                />
+                <button type="button" className="btn small" disabled={busy} onClick={runPreview}>乾跑預覽</button>
+              </div>
+              {preview && (
+                <div className="panel realign-preview">
+                  <div className="kv mono">
+                    <span>新群組數</span><b>{preview.group_count}</b>
+                    <span>新待檢查</span><b>{preview.flagged_count}</b>
+                  </div>
+                  <div className="dist-row">
+                    {Object.entries(preview.missing_distribution).map(([m, n]) => (
+                      <span key={m} className={`chip ${Number(m) > 0 ? 'red' : 'blue'}`}>缺 {m} × {n}</span>
+                    ))}
+                  </div>
+                  <p className="hint">錨點將自動跟隨照片，不會遺失。</p>
+                  <div className="wiz-actions" style={{ marginTop: 10 }}>
+                    <button type="button" className="btn small" onClick={() => setPreview(null)}>取消</button>
+                    <button type="button" className="btn primary small" disabled={busy} onClick={applyRealign}>
+                      {busy ? '重建中…' : '套用'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </Section>
+
+            {(report.aspect_anomalies || []).length > 0 && (
+              <Section title={`比例異常 · ${report.aspect_anomalies.length}`}>
+                {report.aspect_anomalies.map((a, i) => (
+                  <div key={i} className="list-item">
+                    <span className="mono">{a.camera} · {a.rel_path}</span>
+                    <span className="hint">{a.width}×{a.height}</span>
+                  </div>
+                ))}
+                <p className="hint">瀏覽時該格會出現 ⟳ 按鈕可就地旋轉。</p>
+              </Section>
+            )}
+
+            {info.dangling_anchors.length > 0 && (
+              <Section title={`⚠ 失準錨點 · ${info.dangling_anchors.length}`}>
+                {info.dangling_anchors.map((a, i) => (
+                  <div key={i} className="list-item warn-text">
+                    <span className="mono">{formatMileage(a.mileage_m)}</span>
+                    <span className="hint">退回最近群組 #{(a.group_seq ?? -1) + 1} · 載體 {a.carrier_camera ?? '?'}</span>
+                  </div>
+                ))}
+              </Section>
+            )}
+          </>
+        )}
+
+        {tab === 'flagged' && (
+          <>
+            {info.flagged.length === 0 && <p className="hint drawer-empty">目前沒有待檢查照片。</p>}
+            {info.flagged.map((f) => (
+              <div key={f.photo_id} className="panel flag-card">
+                <div className="mono list-main">{f.camera} · {f.rel_path}</div>
+                <span className="chip amber">{f.reason}</span>
+                <div className="row-actions">
+                  <button type="button" className="btn small" onClick={() => onJump?.('flag', f)}>🔍 檢閱</button>
+                  <button type="button" className="btn small" onClick={() => api.confirmFlag(tunnelId, f.photo_id).then(onChanged)}>✅ 無誤</button>
+                  <button
+                    type="button"
+                    className="btn danger small"
+                    onClick={() => api.markMissing(tunnelId, f.photo_id).then(() => { onChanged?.(); onJump?.('refresh') })}
+                  >⛔ 改判缺照</button>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+
+        {tab === 'missing' && (
+          <>
+            {info.manual_missing.length === 0 && <p className="hint drawer-empty">沒有改判缺照的照片。</p>}
+            {info.manual_missing.map((f) => (
+              <div key={f.photo_id} className="panel flag-card">
+                <div className="mono list-main">{f.camera} · {f.rel_path}</div>
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={() => api.restorePhoto(tunnelId, f.photo_id).then(onChanged)}
+                >↩ 復原</button>
+              </div>
+            ))}
+          </>
+        )}
+
+        {tab === 'cams' && (
+          <>
+            {info.cameras.map((c) => (
+              <div key={c.seq} className="panel flag-card">
+                <div className="mono list-main">{c.name}</div>
+                <select
+                  className="field mono"
+                  value={c.rotation}
+                  onChange={(e) =>
+                    api.setCameraRotation(tunnelId, c.seq, parseInt(e.target.value)).then(onChanged)
+                  }
+                >
+                  {ROT_OPTIONS.map((r) => <option key={r} value={r}>{r}°</option>)}
+                </select>
+              </div>
+            ))}
+          </>
+        )}
+
+        {error && <p className="err-text">{error}</p>}
+      </div>
+    </aside>
+  )
+}
+
+function Section({ title, children }) {
+  return (
+    <section className="info-section">
+      <span className="label">{title}</span>
+      {children}
+    </section>
+  )
+}

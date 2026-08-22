@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ IMAGE_EXTS = {".jpg", ".jpeg"}
 class CameraInput:
     name: str
     folder: str
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,8 @@ class _ScannedPhoto:
     t: datetime
     time_source: str  # 'exif' | 'mtime'
     flagged: bool
+    width: int | None = None
+    height: int | None = None
 
 
 def read_photo_time(path: Path) -> tuple[datetime | None, str]:
@@ -65,6 +69,23 @@ def read_photo_time(path: Path) -> tuple[datetime | None, str]:
     except Exception:
         pass
     return None, "mtime"
+
+
+def read_display_dims(path: Path) -> tuple[int | None, int | None]:
+    """EXIF orientation 套用後的顯示尺寸。
+
+    僅讀檔頭 orientation 標籤並算術交換寬高——絕不解碼全圖
+    （exif_transpose 對需轉正的照片會觸發完整解碼，數百張會拖垮匯入）。
+    """
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+            orientation = int((im.getexif() or {}).get(274, 1))
+            if orientation in (5, 6, 7, 8):
+                w, h = h, w
+            return w, h
+    except Exception:
+        return None, None
 
 
 class TunnelImporter:
@@ -85,7 +106,8 @@ class TunnelImporter:
                 if t is None:
                     t = datetime.fromtimestamp(os.path.getmtime(p))
                     flagged = True
-                photos.append(_ScannedPhoto(seq, p, t, source, flagged))
+                w, h = read_display_dims(p)
+                photos.append(_ScannedPhoto(seq, p, t, source, flagged, width=w, height=h))
         return photos
 
     def preview(self, req: ImportRequest) -> ImportPreview:
@@ -116,7 +138,10 @@ class TunnelImporter:
             name=req.name,
             start_m=req.start_m,
             end_m=req.end_m,
-            cameras=[{"name": c.name, "root_path": c.folder} for c in req.cameras],
+            cameras=[
+                {"name": c.name, "root_path": c.folder, "rotation": c.rotation}
+                for c in req.cameras
+            ],
             tolerance_seconds=req.tolerance_seconds,
         )
 
@@ -145,11 +170,11 @@ class TunnelImporter:
                 cam_rows = conn.execute("SELECT id, seq FROM cameras ORDER BY seq").fetchall()
                 cam_id_by_seq = {r["seq"]: r["id"] for r in cam_rows}
 
+                anomalies: list[dict] = []
+                flagged_cams = {g.seq: g.flagged for g in result.groups}
                 for s in series:
                     off = result.offsets_seconds[s.camera_index]
                     cam_dir = Path(req.cameras[s.camera_index].folder)
-                    # 殘差旗標（依相機）收集
-                    flagged_cams = {g.seq: g.flagged for g in result.groups}
                     group_seq_of_pid = {
                         pid: g.seq for g in result.groups for cam_idx, pid in g.members.items() if cam_idx == s.camera_index
                     }
@@ -159,8 +184,8 @@ class TunnelImporter:
                         residual_flagged = s.camera_index in flagged_cams[gseq]
                         corrected = stamp.t + timedelta(seconds=off)
                         conn.execute(
-                            "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source, flagged) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source, flagged, width, height) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 cam_id_by_seq[s.camera_index],
                                 seq_to_group_id[gseq],
@@ -169,12 +194,65 @@ class TunnelImporter:
                                 corrected.isoformat(timespec="seconds"),
                                 sp.time_source,
                                 1 if (sp.flagged or residual_flagged) else 0,
+                                sp.width,
+                                sp.height,
                             ),
                         )
                     conn.execute(
                         "UPDATE cameras SET dt_offset_sec = ?, photo_count = ? WHERE seq = ?",
                         (off, len(s.photos), s.camera_index),
                     )
+
+                    # 比例異常偵測：套用機位旋轉後的顯示比例多數派，少數派列出
+                    rot = req.cameras[s.camera_index].rotation % 180
+                    ratios: dict[int, list[_ScannedPhoto]] = {}
+                    for stamp in s.photos:
+                        sp = scanned_by_pid[stamp.photo_id]
+                        if not sp.width or not sp.height:
+                            continue
+                        w_, h_ = (sp.height, sp.width) if rot else (sp.width, sp.height)
+                        ratios.setdefault(round(w_ / h_ * 100), []).append(sp)
+                    if ratios:
+                        majority = max(ratios, key=lambda k: len(ratios[k]))
+                        for ratio_key in ratios:
+                            if ratio_key == majority:
+                                continue
+                            for sp in ratios[ratio_key]:
+                                anomalies.append(
+                                    {
+                                        "camera": req.cameras[s.camera_index].name,
+                                        "rel_path": os.path.relpath(sp.path, cam_dir),
+                                        "width": sp.width,
+                                        "height": sp.height,
+                                    }
+                                )
+
+                dist: dict[str, int] = {}
+                for g in result.groups:
+                    key = str(len(g.missing))
+                    dist[key] = dist.get(key, 0) + 1
+                report = {
+                    "tolerance_seconds": req.tolerance_seconds,
+                    "group_count": len(result.groups),
+                    "missing_distribution": dist,
+                    "flagged_count": sum(1 for p in photos if p.flagged),
+                    "cameras": [
+                        {
+                            "name": req.cameras[s.camera_index].name,
+                            "photo_count": len(s.photos),
+                            "offset_seconds": result.offsets_seconds[s.camera_index],
+                            "rotation": req.cameras[s.camera_index].rotation,
+                        }
+                        for s in series
+                    ],
+                    "aspect_anomalies": anomalies,
+                    "imported_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('import_report', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (json.dumps(report, ensure_ascii=False),),
+                )
         finally:
             conn.close()
         return info

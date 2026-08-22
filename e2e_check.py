@@ -1,4 +1,5 @@
 """端對端驗證：以八卦山西行實照跑完整流程（匯入→檢視→錨定→導航）。"""
+import re as _re
 import sys
 import time
 
@@ -160,6 +161,61 @@ with sync_playwright() as p:
         gone = "K23+150" not in page.inner_text(".drawer")
         tilde_back = "~" in page.inner_text(".vread-mile")
         check("刪除錨點還原推算", gone and tilde_back)
+
+    # ===== 修訂 R1：資訊面板 / 重新對齊 / 合併 / 原圖檢視 / 旋轉 =====
+    page.keyboard.press("Escape")
+    page.click("text=資訊")
+    page.wait_for_selector(".info-drawer")
+    drawer_txt = page.inner_text(".info-drawer")
+    check("資訊面板開啟（含匯入報告）", "容差" in drawer_txt and "群組數" in drawer_txt)
+
+    tol_input = page.locator(".realign-row input")
+    tol_input.fill("4")
+    page.click("text=乾跑預覽")
+    page.wait_for_selector(".realign-preview")
+    pv = page.inner_text(".realign-preview")
+    check("重新對齊乾跑預覽", "新群組數" in pv)
+    page.click("text=套用")
+    page.wait_for_timeout(2000)
+    drawer_txt2 = page.inner_text(".info-drawer")
+    check("重新對齊後報告更新（容差 4s）", "4s" in drawer_txt2)
+
+    # 合併：M 進檢閱模式 → 與後合併 → 衝突裁決保留當前側
+    total_before = int(_re.search(r"/\s*(\d+)", " ".join(page.inner_text(".vread-seq").split())).group(1))
+    page.keyboard.press("Escape")
+    page.keyboard.press("m")
+    page.wait_for_selector(".review-overlay")
+    check("檢閱模式三聯並排", page.locator(".review-col").count() == 3)
+    page.click("text=與後合併 ⇥")
+    page.wait_for_selector(".dialog")
+    page.click("text=保留當前側（鄰側改判缺照）")
+    page.wait_for_timeout(1500)
+    total_after = int(_re.search(r"/\s*(\d+)", " ".join(page.inner_text(".vread-seq").split())).group(1))
+    check("合併後群組數減一", total_after == total_before - 1, f"({total_before}→{total_after})")
+
+    # 點擊照片格開原圖覆蓋層 → R 旋轉 → Esc
+    # （先重載脫離縮放狀態；重載後回首頁，需重新進入隧道）
+    page.reload()
+    page.wait_for_load_state("networkidle")
+    page.click(".tunnel-card")
+    page.wait_for_selector("img.tile-img.on", timeout=15000)
+    tile = page.locator(".tile-img.on").first
+    tb = tile.bounding_box()
+    page.mouse.click(tb["x"] + tb["width"] / 2, tb["y"] + tb["height"] / 2)
+    page.wait_for_selector(".orig-overlay")
+    check("點擊開啟原圖覆蓋層", True)
+    page.keyboard.press("r")
+    page.wait_for_timeout(1200)
+    page.keyboard.press("Escape")
+
+    # 相機旋轉設定（資訊面板 → 相機）
+    page.click("text=資訊")
+    page.wait_for_selector(".info-drawer")
+    page.click(".info-tab >> text=相機")
+    page.wait_for_selector(".flag-card select")
+    page.locator(".flag-card select").first.select_option("90")
+    page.wait_for_timeout(1000)
+    check("相機旋轉設定無錯誤", len(errors) == 0)
 
     check("無 JS 錯誤", len(errors) == 0, "; ".join(errors[:3]))
     browser.close()

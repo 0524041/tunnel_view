@@ -147,6 +147,16 @@ export default function WizardPage({ onDone, onCancel }) {
                     setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, folder: e.target.value } : c)))
                   }
                 />
+                <select
+                  className="field mono cam-rot"
+                  value={cam.rotation ?? 0}
+                  title="機位旋轉（照片呈現方向）"
+                  onChange={(e) =>
+                    setCameras((cs) => cs.map((c, j) => (j === i ? { ...c, rotation: parseInt(e.target.value) } : c)))
+                  }
+                >
+                  {[0, 90, 180, 270].map((r) => <option key={r} value={r}>{r}°</option>)}
+                </select>
                 <button
                   type="button"
                   className="btn danger small"

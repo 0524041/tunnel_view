@@ -14,7 +14,7 @@ const LAYOUTS = {
 
 const clampF = (f, s) => Math.max(1 - s, Math.min(0, f))
 
-export default function CameraGrid({ tunnelId, group, cameras }) {
+export default function CameraGrid({ tunnelId, group, cameras, anomalyPaths, onOpenOriginal, onRotate }) {
   const n = cameras.length
   const [cols, rows] = LAYOUTS[n] ?? [4, 2]
   const [view, setView] = useState({ s: 1, nx: 0, ny: 0 })
@@ -43,6 +43,9 @@ export default function CameraGrid({ tunnelId, group, cameras }) {
             flagged={!!photo.flagged}
             view={view}
             onView={setView}
+            showRotate={anomalyPaths?.has(`${i}:${photo.rel_path}`) && photo.rotation_override == null}
+            onOpenOriginal={onOpenOriginal}
+            onRotate={onRotate}
           />
         ) : (
           <div key={`miss-${group.seq}-${i}`} className="tile tile-missing">
@@ -57,7 +60,7 @@ export default function CameraGrid({ tunnelId, group, cameras }) {
   )
 }
 
-function PhotoTile({ tunnelId, photo, name, flagged, view, onView }) {
+function PhotoTile({ tunnelId, photo, name, flagged, view, onView, showRotate, onOpenOriginal, onRotate }) {
   const ref = useRef(null)
   const [loaded, setLoaded] = useState(false)
   const dragRef = useRef(null)
@@ -108,9 +111,15 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView }) {
     })
   }
 
-  const onPointerUp = () => {
+  const onPointerUp = (e) => {
+    const wasMoved = dragRef.current?.moved
     dragRef.current = null
+    if (!wasMoved && view.s === 1 && onOpenOriginal) {
+      onOpenOriginal(photo)
+    }
   }
+
+  const effAngle = (photo.rotation_override ?? photo.camera_rotation ?? 0) % 360
 
   return (
     <div
@@ -121,7 +130,7 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView }) {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onDoubleClick={() => onView({ s: 1, nx: 0, ny: 0 })}
-      style={{ cursor: view.s > 1 ? 'grab' : 'default', touchAction: 'none' }}
+      style={{ cursor: view.s > 1 ? 'grab' : 'zoom-in', touchAction: 'none' }}
     >
       {!loaded && <div className="tile-spin"><div className="spin" /></div>}
       <img
@@ -137,6 +146,17 @@ function PhotoTile({ tunnelId, photo, name, flagged, view, onView }) {
       />
       <span className="chip cam-chip">{name}</span>
       {flagged && <span className="chip red flag-chip">待檢查</span>}
+      {showRotate && (
+        <button
+          type="button"
+          className="rotate-btn"
+          title="比例異常——點擊旋轉 90°"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRotate?.(photo.photo_id, (effAngle + 90) % 360)
+          }}
+        >⟳</button>
+      )}
     </div>
   )
 }

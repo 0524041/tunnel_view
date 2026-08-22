@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+SCHEMA_VERSION = "2"
+
 _SCHEMA_TUNNEL = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -24,7 +26,8 @@ CREATE TABLE IF NOT EXISTS cameras (
     name TEXT NOT NULL,
     root_path TEXT NOT NULL,
     dt_offset_sec REAL NOT NULL DEFAULT 0.0,
-    photo_count INTEGER NOT NULL DEFAULT 0
+    photo_count INTEGER NOT NULL DEFAULT 0,
+    rotation INTEGER NOT NULL DEFAULT 0 CHECK (rotation IN (0, 90, 180, 270))
 );
 
 CREATE TABLE IF NOT EXISTS photo_groups (
@@ -44,19 +47,100 @@ CREATE TABLE IF NOT EXISTS photos (
     exif_time TEXT NOT NULL,
     corrected_time TEXT NOT NULL,
     time_source TEXT NOT NULL CHECK (time_source IN ('exif', 'mtime')),
-    flagged INTEGER NOT NULL DEFAULT 0
+    flagged INTEGER NOT NULL DEFAULT 0,
+    width INTEGER,
+    height INTEGER,
+    manual_missing INTEGER NOT NULL DEFAULT 0,
+    rotation_override INTEGER CHECK (rotation_override IN (0, 90, 180, 270))
 );
 CREATE INDEX IF NOT EXISTS idx_photos_group ON photos(group_id);
 CREATE INDEX IF NOT EXISTS idx_photos_camera ON photos(camera_id);
 
 CREATE TABLE IF NOT EXISTS anchors (
     id INTEGER PRIMARY KEY,
-    group_seq INTEGER NOT NULL UNIQUE REFERENCES photo_groups(seq) ON DELETE CASCADE,
+    carrier_photo_id INTEGER NOT NULL UNIQUE REFERENCES photos(id),
     mileage_m INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
+
+
+def migrate_if_needed(conn: sqlite3.Connection) -> None:
+    """隧道 db 開啟時的冪等升級：v1（group_seq 綁定）→ v2（載體照片綁定）。"""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    if row and row[0] == SCHEMA_VERSION:
+        return
+
+    with conn:
+        photo_cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+        if "manual_missing" not in photo_cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN manual_missing INTEGER NOT NULL DEFAULT 0")
+        if "width" not in photo_cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN width INTEGER")
+        if "height" not in photo_cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN height INTEGER")
+        if "rotation_override" not in photo_cols:
+            conn.execute(
+                "ALTER TABLE photos ADD COLUMN rotation_override "
+                "CHECK (rotation_override IN (0, 90, 180, 270))"
+            )
+        cam_cols = {r[1] for r in conn.execute("PRAGMA table_info(cameras)")}
+        if "rotation" not in cam_cols:
+            conn.execute(
+                "ALTER TABLE cameras ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0 "
+                "CHECK (rotation IN (0, 90, 180, 270))"
+            )
+        anchor_cols = {r[1] for r in conn.execute("PRAGMA table_info(anchors)")}
+        if anchor_cols and "carrier_photo_id" not in anchor_cols:
+            _migrate_anchors_v1_to_v2(conn)
+        elif not anchor_cols:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS anchors (
+                    id INTEGER PRIMARY KEY,
+                    carrier_photo_id INTEGER NOT NULL UNIQUE REFERENCES photos(id),
+                    mileage_m INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                """
+            )
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (SCHEMA_VERSION,),
+        )
+
+
+def _migrate_anchors_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """舊錨點（group_seq 綁定）→ 載體照片綁定；載體＝該群組第一張照片。"""
+    old_rows = conn.execute("SELECT group_seq, mileage_m FROM anchors").fetchall()
+    conn.execute("ALTER TABLE anchors RENAME TO anchors_old")
+    conn.executescript(
+        """
+        CREATE TABLE anchors (
+            id INTEGER PRIMARY KEY,
+            carrier_photo_id INTEGER NOT NULL UNIQUE REFERENCES photos(id),
+            mileage_m INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+    for r in old_rows:
+        carrier = conn.execute(
+            "SELECT p.id FROM photos p JOIN cameras c ON c.id = p.camera_id "
+            "WHERE p.group_id = (SELECT id FROM photo_groups WHERE seq = ?) "
+            "ORDER BY c.seq LIMIT 1",
+            (r["group_seq"],),
+        ).fetchone()
+        if carrier is not None:
+            conn.execute(
+                "INSERT INTO anchors (carrier_photo_id, mileage_m) VALUES (?, ?)",
+                (carrier["id"], r["mileage_m"]),
+            )
+    conn.execute("DROP TABLE anchors_old")
 
 
 @dataclass(frozen=True)
@@ -135,8 +219,8 @@ class Workspace:
                 ],
             )
             tconn.executemany(
-                "INSERT INTO cameras (seq, name, root_path) VALUES (?, ?, ?)",
-                [(i, c["name"], c["root_path"]) for i, c in enumerate(cameras)],
+                "INSERT INTO cameras (seq, name, root_path, rotation) VALUES (?, ?, ?, ?)",
+                [(i, c["name"], c["root_path"], int(c.get("rotation", 0))) for i, c in enumerate(cameras)],
             )
         return TunnelInfo(tunnel_id, name, db_filename, start_m, end_m, len(cameras))
 
@@ -146,7 +230,9 @@ class Workspace:
 
     def open_tunnel(self, tunnel_id: int) -> sqlite3.Connection:
         row = self._tunnel_row(tunnel_id)
-        return self._connect(self.root / row["db_filename"])
+        conn = self._connect(self.root / row["db_filename"])
+        migrate_if_needed(conn)
+        return conn
 
     def tunnel_meta(self, tunnel_id: int) -> dict[str, str]:
         row = self._tunnel_row(tunnel_id)

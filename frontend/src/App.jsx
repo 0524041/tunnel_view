@@ -10,7 +10,12 @@ export default function App() {
 
   const openTunnel = (tunnelId, name) => {
     const key = `t${tunnelId}`
-    setTabs((ts) => (ts.some((t) => t.key === key) ? ts : [...ts, { key, tunnelId, name }]))
+    setTabs((ts) => {
+      const withoutWizard = ts.filter((t) => t.key !== 'wizard')
+      return withoutWizard.some((t) => t.key === key)
+        ? withoutWizard.map((t) => (t.key === key ? { ...t, name } : t))
+        : [...withoutWizard, { key, tunnelId, name }]
+    })
     setActive(key)
   }
 
