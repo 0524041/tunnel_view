@@ -31,10 +31,10 @@
 
 ## 快速開始
 
-需求：Python 3.11+。前端已預建於 `frontend/dist`，**不需要 Node.js**。
+**套件與 Python 皆由 [uv](https://docs.astral.sh/uv/) 管理，無需手動安裝 Python / pip。** 前端已預建於 `frontend/dist`，**不需要 Node.js**。
 
 ```bash
-# macOS / Linux
+# macOS / Linux（bash 為主，相容 zsh；會自動處理 uv 與 Python）
 ./run.sh
 
 # Windows
@@ -49,10 +49,49 @@ run.bat
 | `TUNNELVIEW_PORT` | `8000` | 監聽埠 |
 | `TUNNELVIEW_DIST` | 自動偵測 | 前端靜態檔目錄 |
 
+### 安裝 uv（僅需一次）
+
+`run.sh` 若偵測不到 `uv` 會嘗試自動安裝（需 `curl` 或 `wget`），建議先手動安裝一次，空 Ubuntu 也能一鍵起飛：
+
+```bash
+# Linux / macOS 官方獨立安裝（不依賴系統 python/pip）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# 讓當前 shell 生效（擇一）
+source $HOME/.local/bin/env
+# 或
+export PATH="$HOME/.local/bin:$PATH"
+
+uv --version  # 驗證
+```
+
+其他安裝方式：
+
+| 平台 | 指令 |
+|---|---|
+| Windows (PowerShell) | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
+| Homebrew | `brew install uv` |
+| pipx / pip | `pipx install uv` 或 `pip install uv` |
+
+> 空 Ubuntu 一鍵部署範例（什麼都沒有的機器）：
+> ```bash
+> sudo apt update && sudo apt install -y curl git
+> git clone <repo-url> && cd tunnel_view
+> curl -LsSf https://astral.sh/uv/install.sh | sh && source $HOME/.local/bin/env
+> ./run.sh  # 自動下載 Python 3.11+、同步依賴並啟動
+> ```
+
 ### 從原始碼建置前端（僅開發時需要）
 
 ```bash
 cd frontend && npm install && npm run build
+```
+
+### 手動啟動（不等於一鍵腳本）
+
+```bash
+uv sync                  # 同步依賴（自動下載 Python）
+uv run python server.py  # 啟動服務
+uv run pytest backend/tests/ -q  # 測試
 ```
 
 ## 使用流程
@@ -131,13 +170,15 @@ frontend/src/
 ## 測試
 
 ```bash
-.venv/bin/python -m pytest backend/tests/ -q     # 後端單元 + API 整合（119 tests）
+uv run pytest backend/tests/ -q     # 後端單元 + API 整合（119 tests）
+# 或
+uv run python -m pytest backend/tests/ -q
 
 # 端對端（需 Playwright chromium；以樣本資料夾跑完整使用者流程）
-TUNNELVIEW_HOME=/tmp/tvdata .venv/bin/python \
+TUNNELVIEW_HOME=/tmp/tvdata uv run python \
   /path/to/webapp-testing/scripts/with_server.py \
-  --server ".venv/bin/python server.py" --port 8000 \
-  -- .venv/bin/python e2e_check.py ./八卦山西行
+  --server "uv run python server.py" --port 8000 \
+  -- uv run python e2e_check.py ./八卦山西行
 ```
 
 測試縫：① 對齊引擎純函式核心（合成 fixture：漏拍／漂移／雙拍／量化）② 內插與防呆 ③ FastAPI 整合層（匯入→查詢→錨點→廣播→併發遷移）。
