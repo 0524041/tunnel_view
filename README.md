@@ -94,11 +94,17 @@ cd frontend && npm install && npm run build
 | uv 下載快取 | `~/.cache/uv`（Linux）/ `~/Library/Caches/uv`（macOS）/ `%LOCALAPPDATA%\uv\cache`（Windows） | `uv` 下載的 wheel 與 Python 版本 | `uv cache clean` |
 
 ```bash
-# 正常啟動 / 重啟（不清除快取）
+# 正常啟動 / 重啟（背景進程；Smart Deploy——前端原始碼有變更且機器有 Node.js 才重新編譯）
 ./run.sh
 ./run.sh restart
 run.bat
 run.bat restart
+
+# 服務管理（macOS/Linux 背景執行：日誌 server.log、PID .server.pid）
+./run.sh status            # 查看運行狀態
+./run.sh logs -f           # 即時日誌
+./run.sh stop              # 停止服務
+./run.sh build             # 只編譯前端，不啟動
 
 # 單獨清除快取（縮圖異常、旋轉後仍顯示舊圖時使用）
 ./run.sh clear-cache
@@ -111,6 +117,8 @@ run.bat clean
 # 查看說明
 ./run.sh --help
 ```
+
+> `run.bat` 維持前景執行；`run.sh` 啟動後即為背景常駐進程，關閉終端機不影響服務。
 
 ### 手動啟動（不等於一鍵腳本）
 

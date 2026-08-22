@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 node_modules/
 
@@ -9,3 +10,8 @@ data/
 .DS_Store
 
 八卦山西行/
+
+# run.sh 執行期產物
+.server.pid
+server.log
+.deploy_state
