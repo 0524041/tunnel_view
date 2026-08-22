@@ -84,27 +84,50 @@ uv --version  # 驗證
 
 ```bash
 cd frontend && npm install && npm run build
+# 或透過一鍵腳本（會自動判斷是否需安裝依賴）：
+./run.sh build
 ```
 
-### 快取與重啟
+### 服務管理與快取
+
+#### `run.sh` 指令一覽（macOS / Linux）
+
+| 指令 | 說明 |
+|---|---|
+| `./run.sh` | **Smart Deploy 啟動**：比對前端原始碼雜湊（`.deploy_state`），有變更且機器有 Node.js 才 `npm install` + `npm run build`，否則沿用 `frontend/dist`；背景執行 |
+| `./run.sh restart` | 重啟（同為 Smart Deploy） |
+| `./run.sh stop` | 停止服務（`TERM` → 等待 → `KILL`，並釋放埠） |
+| `./run.sh status` | 查看狀態（PID、URL、資料目錄） |
+| `./run.sh logs` | 顯示最近 50 行日誌；`logs -f` 動態追蹤 |
+| `./run.sh build` | 只編譯前端，不啟動服務 |
+| `./run.sh clear-cache` | 清除圖片縮圖快取後啟動 |
+| `./run.sh clean` | 清除圖片快取 + uv 快取後啟動 |
+| `./run.sh --help` | 顯示說明 |
+
+> `run.sh` 為**背景常駐進程**（`nohup`），日誌 `server.log`、PID `.server.pid`、部署狀態 `.deploy_state` 皆在專案根目錄（已加入 `.gitignore`），關閉終端機不影響服務。`run.bat` 維持前景執行。
+
+#### 快取位置
 
 | 快取 | 位置 | 說明 | 刪除方式 |
 |---|---|---|---|
 | 圖片縮圖 | `$TUNNELVIEW_HOME/.thumb_cache`（預設 `data/.thumb_cache`） | 動態縮圖（`w=1600` / 原圖旋轉後），可安全刪除，下次瀏覽自動重建 | `rm -rf data/.thumb_cache` 或一鍵指令 |
 | uv 下載快取 | `~/.cache/uv`（Linux）/ `~/Library/Caches/uv`（macOS）/ `%LOCALAPPDATA%\uv\cache`（Windows） | `uv` 下載的 wheel 與 Python 版本 | `uv cache clean` |
+| 前端部署狀態 | `.deploy_state` | 記錄 `frontend/src` 與 `package-lock.json` 雜湊，供 Smart Deploy 判斷 | 自動管理，無需手動刪除 |
+| 服務日誌 / PID | `server.log` / `.server.pid` | 背景服務輸出與進程號 | `rm server.log .server.pid` 或 `./run.sh stop` |
 
 ```bash
-# 正常啟動 / 重啟（背景進程；Smart Deploy——前端原始碼有變更且機器有 Node.js 才重新編譯）
+# 正常啟動 / 重啟（Smart Deploy）
 ./run.sh
 ./run.sh restart
 run.bat
 run.bat restart
 
-# 服務管理（macOS/Linux 背景執行：日誌 server.log、PID .server.pid）
+# 服務管理
 ./run.sh status            # 查看運行狀態
-./run.sh logs -f           # 即時日誌
-./run.sh stop              # 停止服務
-./run.sh build             # 只編譯前端，不啟動
+./run.sh logs              # 最近 50 行
+./run.sh logs -f           # 即時追蹤
+./run.sh stop              # 停止
+./run.sh build             # 只編譯前端
 
 # 單獨清除快取（縮圖異常、旋轉後仍顯示舊圖時使用）
 ./run.sh clear-cache
@@ -117,8 +140,6 @@ run.bat clean
 # 查看說明
 ./run.sh --help
 ```
-
-> `run.bat` 維持前景執行；`run.sh` 啟動後即為背景常駐進程，關閉終端機不影響服務。
 
 ### 手動啟動（不等於一鍵腳本）
 
