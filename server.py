@@ -1,0 +1,32 @@
+"""隧道多視角檢視平台 啟動入口。
+
+環境變數：
+- TUNNELVIEW_HOME：資料目錄（index.db 與各隧道 .db 所在），預設 ./data
+- TUNNELVIEW_PORT：監聽埠，預設 8000
+"""
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "backend"))
+
+import uvicorn
+
+from tunnelview.api import create_app
+from tunnelview.db import Workspace
+
+
+def main() -> None:
+    home = Path(os.environ.get("TUNNELVIEW_HOME", "data"))
+    home.mkdir(parents=True, exist_ok=True)
+    workspace = Workspace(home)
+    workspace.init()
+    app = create_app(workspace)
+    port = int(os.environ.get("TUNNELVIEW_PORT", "8000"))
+    print(f"Tunnel View → http://0.0.0.0:{port}  (資料目錄: {home.resolve()})")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

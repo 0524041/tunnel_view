@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+node_modules/
+
+data/
+.thumb_cache/
+.DS_Store
+
+八卦山西行/

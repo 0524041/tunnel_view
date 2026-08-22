@@ -1,0 +1,67 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg0);
+  color: var(--text-hi);
+  font-family: var(--font-body);
+  font-size: 14px;
+  overflow: hidden;
+  background-image:
+    radial-gradient(ellipse 90% 70% at 50% -10%, rgba(255, 179, 0, 0.045), transparent),
+    repeating-linear-gradient(0deg, transparent 0 39px, rgba(255, 255, 255, 0.018) 39px 40px),
+    repeating-linear-gradient(90deg, transparent 0 39px, rgba(255, 255, 255, 0.018) 39px 40px);
+}
+
+::selection {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #262b33;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #333a44;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+input,
+select {
+  font-family: inherit;
+}
+input:focus-visible,
+button:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 1px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+.display {
+  font-family: var(--font-display);
+}

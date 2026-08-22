@@ -1,0 +1,23 @@
+:root {
+  --bg0: #0a0b0d;
+  --bg1: #101216;
+  --bg2: #16191f;
+  --bg3: #1c2027;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --text-hi: #eceef0;
+  --text: #9aa3ad;
+  --text-dim: #59626c;
+  --amber: #ffb300;
+  --amber-soft: rgba(255, 179, 0, 0.13);
+  --blue: #4fa3ff;
+  --blue-soft: rgba(79, 163, 255, 0.14);
+  --red: #ff4d4f;
+  --red-soft: rgba(255, 77, 79, 0.12);
+  --green: #3dd68c;
+  --font-display: 'Chakra Petch', 'Noto Sans TC', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-body: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+  --radius: 6px;
+  --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
