@@ -234,18 +234,24 @@ export default function ScrubberRail({
     return [a, a + s]
   }
 
-  const onWheel = (e) => {
-    e.preventDefault()
-    const { w } = sizeRef.current
-    const rect = wrapRef.current.getBoundingClientRect()
-    const px = e.clientX - rect.left
-    const [v0, v1] = viewRef.current
-    const idxAtCursor = v0 + ((px - PAD) / (w - PAD * 2)) * (v1 - v0)
-    const k = Math.exp(e.deltaY * 0.0015)
-    let span = Math.max(8, Math.min((v1 - v0) * k, n))
-    let a = idxAtCursor - ((idxAtCursor - v0) / (v1 - v0)) * span
-    setView(clampView([a, a + span]))
-  }
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const handler = (e) => {
+      e.preventDefault()
+      const { w } = sizeRef.current
+      const rect = el.getBoundingClientRect()
+      const px = e.clientX - rect.left
+      const [v0, v1] = viewRef.current
+      const idxAtCursor = v0 + ((px - PAD) / (w - PAD * 2)) * (v1 - v0)
+      const k = Math.exp(e.deltaY * 0.0015)
+      let span = Math.max(8, Math.min((v1 - v0) * k, n))
+      let a = idxAtCursor - ((idxAtCursor - v0) / (v1 - v0)) * span
+      setView(clampView([a, a + span]))
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [n])
 
   const onPointerDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -287,7 +293,7 @@ export default function ScrubberRail({
 
   return (
     <div className="rail-block">
-      <div className="rail-wrap" ref={wrapRef} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => setTip(null)}>
+      <div className="rail-wrap" ref={wrapRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => setTip(null)}>
         <canvas ref={canvasRef} />
         {tip && tipData && (
           <div className="rail-tip" style={{ left: Math.min(Math.max(tip.px, 120), (sizeRef.current.w || 400) - 130) }}>

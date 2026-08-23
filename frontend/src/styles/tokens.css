@@ -20,4 +20,6 @@
   --font-body: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
   --radius: 6px;
   --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --space: clamp(6px, 1.2vw, 14px);
+  --font-hint: clamp(0.625rem, 1.8vw, 0.6875rem);
 }

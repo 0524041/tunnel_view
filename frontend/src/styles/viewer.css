@@ -28,14 +28,14 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text);
 }
 .vread-seq b {
   color: var(--text-hi);
 }
 .vread-mile {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 600;
   color: var(--amber);
   letter-spacing: 0.03em;
@@ -143,7 +143,7 @@
   justify-items: center;
   gap: 4px;
   color: var(--red);
-  font-size: 13px;
+  font-size: 0.8125rem;
   background:
     repeating-linear-gradient(45deg, transparent 0 9px, rgba(255, 77, 79, 0.05) 9px 18px),
     #0d0e10;
@@ -151,7 +151,7 @@
   border-radius: 3px;
 }
 .miss-icon {
-  font-size: 22px;
+  font-size: 1.375rem;
 }
 .tile-missing .cam-chip {
   color: var(--text);
@@ -199,12 +199,12 @@
 }
 .ar-mile {
   color: var(--blue);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 .ar-seq {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .anchor-row .btn {
   margin: auto 8px;
@@ -232,7 +232,7 @@
   align-items: center;
   flex-wrap: wrap;
   row-gap: 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-dim);
   padding: 4px 12px 6px;
   border-top: 1px solid var(--line);
@@ -290,10 +290,10 @@
 }
 .rail-tip-body b {
   color: var(--amber);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .rail-tip-body span {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text);
 }
 
@@ -303,7 +303,7 @@
   padding: 4px;
   background: var(--bg1);
   border-top: 1px solid var(--line);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 kbd {
@@ -312,7 +312,7 @@ kbd {
   border-bottom-width: 2px;
   border-radius: 4px;
   padding: 1px 5px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .ctx-row {
@@ -320,7 +320,7 @@ kbd {
   justify-content: space-between;
   margin-top: 10px;
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .info-tabs {
@@ -330,7 +330,7 @@ kbd {
 .info-tab {
   flex: 1;
   padding: 10px 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-dim);
   border-bottom: 2px solid transparent;
 }
@@ -348,7 +348,7 @@ kbd {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 6px 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-dim);
   margin-bottom: 10px;
 }
@@ -372,7 +372,7 @@ kbd {
   gap: 8px;
 }
 .list-main {
-  font-size: 12px;
+  font-size: 0.75rem;
   word-break: break-all;
 }
 .row-actions {
@@ -395,7 +395,7 @@ kbd {
   background: var(--amber-soft);
   border: 1px solid var(--amber);
   color: var(--amber);
-  font-size: 16px;
+  font-size: 1rem;
   display: grid;
   place-items: center;
   backdrop-filter: blur(2px);
@@ -420,7 +420,7 @@ kbd {
   margin-bottom: 16px;
 }
 .review-title {
-  font-size: 17px;
+  font-size: 1.0625rem;
   letter-spacing: 0.06em;
 }
 .review-grid {
@@ -446,7 +446,7 @@ kbd {
   background: var(--bg2);
   border-radius: 5px;
   padding: 7px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .review-colhead b {
   color: var(--text-hi);
@@ -468,7 +468,7 @@ kbd {
   height: 100%;
   display: grid;
   place-items: center;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .orig-overlay {
@@ -486,7 +486,7 @@ kbd {
   align-items: center;
   padding: 10px 16px;
   background: var(--bg1);
-  font-size: 13px;
+  font-size: 0.8125rem;
   flex: none;
 }
 .orig-stage {
@@ -527,7 +527,7 @@ kbd {
   padding: 8px 16px;
   background: var(--bg1);
   border-top: 1px solid var(--line);
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text);
   flex: none;
 }
@@ -560,7 +560,7 @@ kbd {
 }
 .mode-seg button {
   padding: 5px 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-dim);
   background: transparent;
 }
@@ -623,7 +623,7 @@ kbd {
   position: absolute;
   right: 4px;
   bottom: 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(0,0,0,0.65);
@@ -673,7 +673,7 @@ kbd {
 .toast {
   padding: 9px 16px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   box-shadow: var(--shadow-pop);
   animation: toast-in 0.18s ease;
 }
@@ -706,13 +706,20 @@ kbd {
   background: rgba(232, 87, 160, 0.92);
   color: #fff;
   border: 1px solid rgba(232, 87, 160, 0.9);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 1px 6px;
 }
 
 /* 空格位（未指派相機） */
 .tile-slot {
   opacity: 0.55;
+}
+
+.cgrid {
+  container-type: inline-size;
+}
+.vtop {
+  container-type: inline-size;
 }
 
 /* ===== RWD 斷點 ===== */
@@ -729,9 +736,67 @@ kbd {
     box-shadow: -12px 0 30px rgba(0, 0, 0, 0.55);
   }
 }
-@media (max-width: 1023px) {
+@media (max-width: 1024px) {
   .vtop { flex-wrap: wrap; row-gap: 6px; }
   .le-grid { min-height: 140px; }
+  /* 側欄轉 Bottom Sheet */
+  .siderail.open {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: 100%;
+    height: 55dvh;
+    border-radius: 12px 12px 0 0;
+    z-index: 75;
+    box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.55);
+  }
+  .siderail.open::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    bottom: 55dvh;
+    background: rgba(0,0,0,0.35);
+    backdrop-filter: blur(1px);
+  }
+}
+@media (max-width: 768px) {
+  .vtop {
+    gap: 8px;
+    padding: 6px 10px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+  .vtop::-webkit-scrollbar { display: none; }
+  .vtop .mode-seg, .vtop .vread { flex-shrink: 0; }
+  /* 原圖側板置底 */
+  .orig-mainrow {
+    flex-direction: column;
+  }
+  .anno-panel {
+    width: 100%;
+    height: 42dvh;
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+}
+@media (max-width: 640px) {
+  .cgrid {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) !important;
+    gap: clamp(4px, 1vw, 6px);
+    padding: clamp(4px, 1vw, 6px);
+  }
+  .rail-wrap { height: 44px; }
+  .rail-legend {
+    gap: 8px;
+    font-size: 0.625rem;
+    padding: 4px 10px;
+  }
+  .rail-legend span:nth-child(n+4) { display: none; }
+  .rail-shortcuts { display: none; }
+  .vread-mile { min-width: 90px; font-size: 0.9375rem; padding: 2px 8px; }
 }
 
 /* ===== R4: 異狀標註 ===== */
@@ -811,7 +876,7 @@ kbd {
   margin-left: 5px;
   color: inherit;
   opacity: 0.7;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1;
 }
 .anno-x:hover {
@@ -860,7 +925,7 @@ kbd {
   border: 1px solid var(--line-strong);
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 4px 10px;
 }
 .filter-chip.on {
@@ -916,7 +981,7 @@ kbd {
   justify-items: start;
 }
 .anomaly-mile {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-hi);
 }
@@ -977,7 +1042,7 @@ kbd {
 .help-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .help-table td {
   padding: 5px 8px;
@@ -993,11 +1058,11 @@ kbd {
 }
 .help-feature b {
   color: var(--amber);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .help-feature p {
   margin: 3px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text);
   line-height: 1.7;
 }
