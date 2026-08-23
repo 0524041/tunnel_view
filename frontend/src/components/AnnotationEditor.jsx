@@ -69,13 +69,25 @@ export default function AnnotationEditor({ tunnelId, photoId, onChanged, footer 
   }
 
   const save = async () => {
+    // 前端預檢：避免送出 NaN / undefined 導致後端 422 變成 Object,Object
+    for (const it of items) {
+      if (!Number.isFinite(it.type_id) || !types.some((t) => t.id === it.type_id)) {
+        toast(`異狀類型無效（id=${String(it.type_id)}），請重新選擇`, 'err')
+        return
+      }
+    }
     setBusy(true)
     try {
-      await api.setAnnotation(tunnelId, photoId, note, items)
+      const result = await api.setAnnotation(tunnelId, photoId, note, items)
+      // 用後端回傳的正規化結果覆蓋本地，避免 id:null 殘留導致重複送出
+      setNote(result.note ?? '')
+      setItems(result.items.map((i) => ({ key: `k${keySeq++}`, id: i.id, type_id: i.type_id, note: i.note ?? '', type_name: i.type_name })))
       setDirty(false)
       onChanged?.()
+      toast('已儲存')
     } catch (e) {
-      toast(e.message, 'err')
+      const msg = e && typeof e.message === 'string' ? e.message : (() => { try { return JSON.stringify(e); } catch { return String(e); } })()
+      toast(msg || '儲存失敗', 'err')
     } finally {
       setBusy(false)
     }

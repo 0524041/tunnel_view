@@ -19,9 +19,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import os
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
@@ -318,6 +322,146 @@ def create_app(workspace: Workspace) -> FastAPI:
         if order not in ("asc", "desc"):
             raise HTTPException(400, "order 僅接受 asc 或 desc")
         return service.anomaly_overview(tid, type_ids=ids or None, q=q or None, order=order)
+
+    @app.get("/api/tunnels/{tid}/anomalies/export")
+    def export_anomalies(
+        tid: int,
+        type_id: str = "",
+        q: str = "",
+        order: str = "asc",
+        format: str = "xlsx",
+    ):
+        ids: list[int] = []
+        for part in type_id.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    ids.append(int(part))
+                except ValueError:
+                    raise HTTPException(400, f"無效的 type_id：{part}")
+        if order not in ("asc", "desc"):
+            raise HTTPException(400, "order 僅接受 asc 或 desc")
+        if format not in ("csv", "xlsx"):
+            raise HTTPException(400, "format 僅接受 csv 或 xlsx")
+        rows = service.anomaly_overview(tid, type_ids=ids or None, q=q or None, order=order)
+        try:
+            meta = service.meta(tid)
+            tunnel_name = meta.get("name", f"tunnel_{tid}")
+        except Exception:
+            tunnel_name = f"tunnel_{tid}"
+        safe_name = "".join(c if c.isascii() and c.isalnum() or c in "_-" else "_" for c in tunnel_name)[:30].strip("_") or f"tunnel_{tid}"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if format == "csv":
+            output = io.StringIO()
+            output.write("\ufeff")
+            writer = csv.writer(output)
+            writer.writerow(["序號", "樁號", "里程(m)", "群組", "相機", "異狀類型", "異狀備註", "照片備註", "照片檔名", "相對路徑", "完整路徑", "建立時間"])
+            for idx, r in enumerate(rows, 1):
+                mileage = r.get("est_mileage_m")
+                mileage_str = f"K{mileage//1000}+{mileage%1000:03d}" if isinstance(mileage, int) else ""
+                rel = r.get("rel_path", "") or ""
+                root = r.get("root_path", "") or ""
+                full_path = str(Path(root) / rel) if root and rel else rel
+                filename = Path(rel).name if rel else ""
+                grp = r.get("group_seq")
+                grp_display = grp + 1 if isinstance(grp, int) else ""
+                writer.writerow([
+                    idx,
+                    mileage_str,
+                    mileage if isinstance(mileage, int) else "",
+                    grp_display,
+                    r.get("camera_name", "") or "",
+                    r.get("type_name", "") or "",
+                    r.get("anomaly_note", "") or "",
+                    r.get("photo_note", "") or "",
+                    filename,
+                    rel,
+                    full_path,
+                    r.get("created_at", "") or "",
+                ])
+            content = output.getvalue().encode("utf-8")
+            filename = f"{safe_name}_anomalies_{timestamp}.csv"
+            return Response(
+                content=content,
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+            )
+        else:
+            try:
+                from openpyxl import Workbook
+                from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+                from openpyxl.utils import get_column_letter
+            except ImportError:
+                raise HTTPException(500, "未安裝 openpyxl，無法產生 xlsx")
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "異狀清單"
+            headers = ["序號", "樁號", "里程(m)", "群組", "相機", "異狀類型", "異狀備註", "照片備註", "照片檔名", "相對路徑", "完整路徑", "建立時間"]
+            header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+            header_font = Font(color="FFFFFF", bold=True, size=10, name="Microsoft JhengHei")
+            header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            thin = Side(style="thin", color="B0B0B0")
+            header_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            ws.append(headers)
+            for col in range(1, len(headers) + 1):
+                cell = ws.cell(row=1, column=col)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = header_align
+                cell.border = header_border
+            ws.row_dimensions[1].height = 22
+            for idx, r in enumerate(rows, 1):
+                mileage = r.get("est_mileage_m")
+                mileage_str = f"K{mileage//1000}+{mileage%1000:03d}" if isinstance(mileage, int) else ""
+                rel = r.get("rel_path", "") or ""
+                root = r.get("root_path", "") or ""
+                full_path = str(Path(root) / rel) if root and rel else rel
+                filename = Path(rel).name if rel else ""
+                grp = r.get("group_seq")
+                grp_display = grp + 1 if isinstance(grp, int) else ""
+                ws.append([
+                    idx,
+                    mileage_str,
+                    mileage if isinstance(mileage, int) else "",
+                    grp_display,
+                    r.get("camera_name", "") or "",
+                    r.get("type_name", "") or "",
+                    r.get("anomaly_note", "") or "",
+                    r.get("photo_note", "") or "",
+                    filename,
+                    rel,
+                    full_path,
+                    r.get("created_at", "") or "",
+                ])
+            data_font = Font(size=9, name="Microsoft JhengHei")
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=len(headers)):
+                for cell in row:
+                    cell.font = data_font
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+                    cell.border = header_border
+            widths = [6, 10, 9, 7, 10, 12, 20, 20, 18, 30, 45, 19]
+            for i, w in enumerate(widths, 1):
+                ws.column_dimensions[get_column_letter(i)].width = w
+            ws.freeze_panes = "A2"
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+            ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+            ws.page_setup.paperSize = ws.PAPERSIZE_A3
+            ws.print_title_rows = "1:1"
+            ws.insert_rows(1)
+            ws["A1"] = f"隧道：{tunnel_name}  |  異狀總數：{len(rows)}  |  匯出時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            ws["A1"].font = Font(bold=True, size=11, name="Microsoft JhengHei", color="1F4E78")
+            ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+            ws.row_dimensions[1].height = 18
+            output = io.BytesIO()
+            wb.save(output)
+            content = output.getvalue()
+            filename = f"{safe_name}_anomalies_{timestamp}.xlsx"
+            return Response(
+                content=content,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+            )
 
     @app.get("/api/fs/list")
     def fs_list(path: str = ""):

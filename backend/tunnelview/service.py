@@ -379,7 +379,7 @@ class TunnelService:
         """總覽頁資料：全部異狀＋照片/群組/相機/類型資訊，排除改判缺照。"""
         sql = (
             "SELECT pa.id AS anomaly_id, pa.photo_id, pa.note AS anomaly_note, pa.created_at, "
-            "pa.type_id, p.rel_path, p.note AS photo_note, c.name AS camera_name, "
+            "pa.type_id, p.rel_path, c.root_path, p.note AS photo_note, c.name AS camera_name, "
             "g.seq AS group_seq, g.est_mileage_m "
             "FROM photo_anomalies pa "
             "JOIN photos p ON p.id = pa.photo_id "
@@ -402,7 +402,7 @@ class TunnelService:
             conn.close()
         types = self._type_names()
         for r in rows:
-            r["type_name"] = types.get(r.pop("type_id"), "（未知類型）")
+            r["type_name"] = types.get(r["type_id"], "（未知類型）")
         return rows
 
     def set_camera_name(self, tunnel_id: int, camera_seq: int, name: str) -> None:

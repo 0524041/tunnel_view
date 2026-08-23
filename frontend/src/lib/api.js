@@ -14,14 +14,43 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+function _formatDetail(detail) {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => {
+        if (typeof d === 'string') return d
+        if (d && typeof d.msg === 'string') {
+          const loc = Array.isArray(d.loc) ? d.loc.slice(1).join('.') : ''
+          return loc ? `${loc}: ${d.msg}` : d.msg
+        }
+        try {
+          return JSON.stringify(d)
+        } catch {
+          return String(d)
+        }
+      })
+      .join('; ')
+  }
+  if (detail && typeof detail === 'object') {
+    try {
+      return JSON.stringify(detail)
+    } catch {
+      return String(detail)
+    }
+  }
+  return String(detail)
+}
+
 async function handle(resp) {
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`
     try {
       const body = await resp.json()
-      if (body.detail) detail = body.detail
+      if (body.detail != null) detail = _formatDetail(body.detail)
+      else if (body.message) detail = String(body.message)
     } catch {}
-    const err = new Error(detail)
+    const err = new Error(String(detail))
     err.status = resp.status
     throw err
   }
@@ -63,7 +92,7 @@ export const api = {
     })
     if (!r.ok) {
       const body = await r.json().catch(() => ({}))
-      throw new Error(body.detail || `HTTP ${r.status}`)
+      throw new Error(body.detail != null ? _formatDetail(body.detail) : `HTTP ${r.status}`)
     }
   },
 
@@ -71,7 +100,7 @@ export const api = {
     const r = await fetch(`/api/tunnels/${tid}/anchors/${seq}`, { method: 'DELETE' })
     if (!r.ok) {
       const body = await r.json().catch(() => ({}))
-      throw new Error(body.detail || `HTTP ${r.status}`)
+      throw new Error(body.detail != null ? _formatDetail(body.detail) : `HTTP ${r.status}`)
     }
   },
 
@@ -215,6 +244,31 @@ export const api = {
     if (q) qs.set('q', q)
     qs.set('order', order)
     return fetch(`/api/tunnels/${tid}/anomalies?${qs}`).then(handle)
+  },
+
+  exportAnomalies: async (tid, { typeId = '', q = '', order = 'asc', format = 'xlsx' } = {}) => {
+    const qs = new URLSearchParams()
+    if (typeId) qs.set('type_id', typeId)
+    if (q) qs.set('q', q)
+    qs.set('order', order)
+    qs.set('format', format)
+    const r = await fetch(`/api/tunnels/${tid}/anomalies/export?${qs}`)
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}))
+      throw new Error(body.detail != null ? _formatDetail(body.detail) : `HTTP ${r.status}`)
+    }
+    const blob = await r.blob()
+    const disposition = r.headers.get('Content-Disposition') || ''
+    const match = disposition.match(/filename="?([^"]+)"?/)
+    const filename = match ? match[1] : `anomalies.${format}`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   },
 
   setCameraName: async (tid, seq, name) => {

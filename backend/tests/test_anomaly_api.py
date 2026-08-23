@@ -343,3 +343,130 @@ class TestMigrationV5:
         env.get(f"/api/tunnels/{tid}/overview")
         overview_after = env.get(f"/api/tunnels/{tid}/overview").json()
         assert overview_after["group_count"] == overview_before["group_count"]
+
+
+class TestAnomalyAbnormal:
+    def test_missing_type_id_returns_422(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        r = env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"note": "no type"}]},
+        )
+        assert r.status_code == 422
+        body = r.json()
+        assert isinstance(body["detail"], list)
+        # 前端 handle 應能將其轉為可讀字串而非 [object Object]
+        assert any("type_id" in str(d.get("loc", "")) for d in body["detail"])
+
+    def test_invalid_type_id_string_returns_422(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        r = env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"type_id": "abc", "note": "x"}]},
+        )
+        assert r.status_code == 422
+
+    def test_valid_archived_type_usable_for_existing(self, env):
+        # 已封存的類型仍可被舊紀錄沿用（編輯時保留）
+        crack = next(t for t in env.get("/api/defect-types").json() if t["name"] == "裂縫")
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"type_id": crack["id"]}]},
+        )
+        env.delete(f"/api/defect-types/{crack['id']}")  # 封存
+        # 以封存類型再次儲存（模擬編輯舊紀錄不換類型）
+        r = env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"type_id": crack["id"], "note": "保留封存"}]},
+        )
+        assert r.status_code == 200
+        assert r.json()["items"][0]["type_name"] == "裂縫"
+
+    def test_duplicate_type_ids_in_same_save(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        types = {t["name"]: t["id"] for t in env.get("/api/defect-types").json()}
+        r = env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [
+                {"type_id": types["裂縫"]},
+                {"type_id": types["裂縫"], "note": "重複"},
+            ]},
+        )
+        assert r.status_code == 200
+        assert len(r.json()["items"]) == 2
+
+    def test_window_returns_anomaly_types(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        types = {t["name"]: t["id"] for t in env.get("/api/defect-types").json()}
+        env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"type_id": types["白華"]}]},
+        )
+        w = _window(env, 1)
+        photo = next(p for p in w[1]["photos"] if p["photo_id"] == pid)
+        assert "anomaly_types" in photo
+        assert "白華" in photo["anomaly_types"]
+
+    def test_overview_keeps_type_id_for_counts(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        types = {t["name"]: t["id"] for t in env.get("/api/defect-types").json()}
+        env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"type_id": types["剝落"]}]},
+        )
+        rows = env.get(f"/api/tunnels/{env.tid}/anomalies").json()
+        assert any("type_id" in r for r in rows)
+        assert any(r["type_id"] == types["剝落"] for r in rows)
+
+
+class TestAnomalyExport:
+    def test_export_csv_contains_headers_and_paths(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        types = {t["name"]: t["id"] for t in env.get("/api/defect-types").json()}
+        env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": "照片備註", "items": [{"type_id": types["鋼筋外露"], "note": "異狀備註"}]},
+        )
+        r = env.get(f"/api/tunnels/{env.tid}/anomalies/export", params={"format": "csv"})
+        assert r.status_code == 200
+        assert "text/csv" in r.headers["content-type"]
+        text = r.content.decode("utf-8-sig")
+        assert "序號" in text and "完整路徑" in text
+        assert "鋼筋外露" in text
+        assert "照片備註" in text or "異狀備註" in text
+        # 路徑與檔名欄位
+        assert ".JPG" in text or ".jpg" in text
+
+    def test_export_xlsx_valid_zip(self, env):
+        win = _window(env, 1)
+        pid = win[1]["photos"][0]["photo_id"]
+        types = {t["name"]: t["id"] for t in env.get("/api/defect-types").json()}
+        env.put(
+            f"/api/tunnels/{env.tid}/photos/{pid}/annotation",
+            json={"note": None, "items": [{"type_id": types["裂縫"]}]},
+        )
+        r = env.get(f"/api/tunnels/{env.tid}/anomalies/export", params={"format": "xlsx"})
+        assert r.status_code == 200
+        assert "application/vnd.openxmlformats" in r.headers["content-type"]
+        # xlsx 為 zip 開頭 PK
+        assert r.content[:2] == b"PK"
+        assert 'filename' in r.headers["content-disposition"]
+
+    def test_export_respects_filters(self, env):
+        win = _window(env, 1)
+        pid1 = win[1]["photos"][0]["photo_id"]
+        pid2 = win[2]["photos"][0]["photo_id"]
+        types = {t["name"]: t["id"] for t in env.get("/api/defect-types").json()}
+        env.put(f"/api/tunnels/{env.tid}/photos/{pid1}/annotation", json={"note": None, "items": [{"type_id": types["裂縫"]}]})
+        env.put(f"/api/tunnels/{env.tid}/photos/{pid2}/annotation", json={"note": None, "items": [{"type_id": types["滲漏水"]}]})
+        r_all = env.get(f"/api/tunnels/{env.tid}/anomalies/export", params={"format": "csv"})
+        r_one = env.get(f"/api/tunnels/{env.tid}/anomalies/export", params={"format": "csv", "type_id": str(types["裂縫"])})
+        assert r_all.content.count(b"\n") > r_one.content.count(b"\n")

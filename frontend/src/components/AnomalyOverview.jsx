@@ -84,6 +84,18 @@ export default function AnomalyOverview({ tunnelId, refreshKey, onLocate, onMeta
           title="切換排序"
           onClick={() => setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))}
         >里程 {order === 'asc' ? '↑' : '↓'}</button>
+        <button
+          type="button"
+          className="btn small"
+          title="匯出為 Excel（適用於工程報告）"
+          onClick={() => api.exportAnomalies(tunnelId, { typeId: typeFilter, q, order, format: 'xlsx' }).then(() => toast('已匯出 Excel')).catch((e) => toast(e.message, 'err'))}
+        >⬇ Excel</button>
+        <button
+          type="button"
+          className="btn small ghost"
+          title="匯出為 CSV"
+          onClick={() => api.exportAnomalies(tunnelId, { typeId: typeFilter, q, order, format: 'csv' }).then(() => toast('已匯出 CSV')).catch((e) => toast(e.message, 'err'))}
+        >⬇ CSV</button>
       </div>
 
       {rows === null && <div className="cgrid-loading"><div className="spin" /></div>}
@@ -91,7 +103,7 @@ export default function AnomalyOverview({ tunnelId, refreshKey, onLocate, onMeta
       {rows !== null && rows.length === 0 && (
         <div className="anomaly-empty">
           <p>目前沒有任何異狀紀錄。</p>
-          <p className="hint">點擊照片格開啟原圖，按「🏷 異狀標註」（A）即可標記裂縫、滲漏水等缺陷。</p>
+          <p className="hint">點擊照片格開啟原圖，在右側「異狀標註」面板即可標記裂縫、滲漏水等缺陷。</p>
         </div>
       )}
 
