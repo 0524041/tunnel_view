@@ -133,6 +133,7 @@ class TunnelService:
                 "FROM photo_groups WHERE seq BETWEEN ? AND ? ORDER BY seq",
                 (lo, hi),
             ).fetchall()
+            type_names = self._type_names()
             result = []
             for g in groups:
                 photos = conn.execute(
@@ -144,6 +145,25 @@ class TunnelService:
                     "WHERE p.group_id = ? AND COALESCE(p.manual_missing, 0) = 0 ORDER BY c.seq",
                     (g["id"],),
                 ).fetchall()
+                photo_dicts = [dict(p) for p in photos]
+                if photo_dicts:
+                    pids = [p["photo_id"] for p in photo_dicts]
+                    qmarks = ",".join("?" * len(pids))
+                    try:
+                        rows = conn.execute(
+                            f"SELECT photo_id, type_id FROM photo_anomalies WHERE photo_id IN ({qmarks})",
+                            pids,
+                        ).fetchall()
+                    except Exception:
+                        rows = []
+                    amap: dict[int, list[str]] = {}
+                    for r in rows:
+                        amap.setdefault(r["photo_id"], []).append(type_names.get(r["type_id"], "（未知）"))
+                    for p in photo_dicts:
+                        p["anomaly_types"] = amap.get(p["photo_id"], [])
+                else:
+                    for p in photo_dicts:
+                        p["anomaly_types"] = []
                 result.append(
                     {
                         "seq": g["seq"],
@@ -151,7 +171,7 @@ class TunnelService:
                         "est_mileage_m": g["est_mileage_m"],
                         "missing_count": g["missing_count"],
                         "anchored": g["seq"] in anchored,
-                        "photos": [dict(p) for p in photos],
+                        "photos": photo_dicts,
                     }
                 )
             return result

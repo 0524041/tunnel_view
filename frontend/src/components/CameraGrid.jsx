@@ -185,6 +185,13 @@ function PhotoTile({ tunnelId, photo, name, highlighted, view, onView, showRotat
         }}
       />
       <span className="chip cam-chip">{name}</span>
+      {photo.anomaly_types?.length > 0 && (
+        <div className="ano-tags">
+          {photo.anomaly_types.map((t) => (
+            <span key={t} className="chip ano-tag">{t}</span>
+          ))}
+        </div>
+      )}
       {photo.aspect_anomaly === 1 && <span className="chip amber aspect-chip">比例</span>}
       {showRotate && (
         <button

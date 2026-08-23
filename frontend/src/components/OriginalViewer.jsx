@@ -26,7 +26,6 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose, 
   const [angleOverride, setAngleOverride] = useState(null)
   const [version, setVersion] = useState(0)
   const [imgError, setImgError] = useState(null)
-  const [annoOpen, setAnnoOpen] = useState(false)
   const containerRef = useRef(null)
   const dragRef = useRef(null)
   const rootRef = useRef(null)
@@ -123,7 +122,6 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose, 
       e.preventDefault()
       cyclePhoto(e.shiftKey ? -1 : 1)
     } else if (e.key.toLowerCase() === 'r') rotateCurrent()
-    else if (e.key.toLowerCase() === 'a') setAnnoOpen((v) => !v)
     else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') cyclePhoto(e.key === 'ArrowRight' ? 1 : -1)
   }
 
@@ -133,11 +131,6 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose, 
         <span className="list-main">{photo.rel_path}</span>
         <span className="chip blue">{Math.round(view.z * 100)}%</span>
         <div className="row-actions">
-          <button
-            type="button"
-            className={`btn small ${annoOpen ? 'primary' : ''}`}
-            onClick={() => setAnnoOpen((v) => !v)}
-          >🏷 異狀標註（A）</button>
           <button type="button" className="btn small" onClick={rotateCurrent}>⟳ 旋轉（R）</button>
           <button type="button" className="btn small" onClick={onClose}>關閉（Esc）</button>
         </div>
@@ -174,22 +167,19 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose, 
           )}
         </div>
 
-        {annoOpen && (
-          <aside className="anno-panel">
-            <div className="anno-panel-head">
-              <span className="label">異狀標註</span>
-              <span className="hint">{photo.__cameraName} · 群組 #{String(photo.__groupSeq + 1).padStart(4, '0')}</span>
-              <button type="button" className="btn small ghost" onClick={() => setAnnoOpen(false)}>✕</button>
-            </div>
-            <div className="anno-panel-body">
-              <AnnotationEditor
-                tunnelId={tunnelId}
-                photoId={photo.photo_id}
-                onChanged={() => onAnnotationChanged?.()}
-              />
-            </div>
-          </aside>
-        )}
+        <aside className="anno-panel">
+          <div className="anno-panel-head">
+            <span className="label">異狀標註</span>
+            <span className="hint">{photo.__cameraName} · 群組 #{String(photo.__groupSeq + 1).padStart(4, '0')}</span>
+          </div>
+          <div className="anno-panel-body">
+            <AnnotationEditor
+              tunnelId={tunnelId}
+              photoId={photo.photo_id}
+              onChanged={() => onAnnotationChanged?.()}
+            />
+          </div>
+        </aside>
       </div>
 
       <div className="orig-exif mono">
@@ -201,7 +191,7 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose, 
       </div>
 
       <div className="orig-foot hint">
-        滾輪縮放 · 拖曳平移 · 雙擊復原 · Tab 切換視角 · A 異狀標註 · R 旋轉 · Esc 關閉
+        滾輪縮放 · 拖曳平移 · 雙擊復原 · Tab 切換視角 · R 旋轉 · Esc 關閉
       </div>
     </div>
   )

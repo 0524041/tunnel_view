@@ -322,10 +322,6 @@ export default function ViewerPage({ tunnelId, active }) {
             onJump={goto}
             onOpenHelp={() => setHelpOpen(true)}
           />
-
-          <div className="vhint hint">
-            ←/→ 群組 · Enter 錨點 · M 合併邊界 · A 異狀標註（原圖內） · Home/End 首/末 · Ctrl+G 跳轉 · ? 說明
-          </div>
         </>
       ) : (
         <div className="vmid">

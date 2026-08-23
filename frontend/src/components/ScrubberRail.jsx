@@ -305,7 +305,7 @@ export default function ScrubberRail({
         <span><i className="legend-diamond" /> 比例異常</span>
         <span><i style={{ background: ANOMALY_COLOR }} /> 異狀</span>
         <span><i style={{ background: '#ffb300', height: 2 }} /> 當前位置</span>
-        <em className="hint">滾輪縮放 · 拖曳平移 · 點擊跳轉</em>
+        <em className="hint rail-shortcuts">←/→ 群組 · Enter 錨點 · M 合併邊界 · Home/End · Ctrl+G 跳轉 · 點照片開原圖 · 滾輪縮放/拖曳</em>
         <span className="vspacer" />
         <button type="button" className="btn small ghost rail-help" title="說明與快捷鍵" onClick={() => onOpenHelp?.()}>?</button>
       </div>

@@ -230,9 +230,11 @@
   display: flex;
   gap: 14px;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
   font-size: 11px;
   color: var(--text-dim);
-  padding: 3px 12px 5px;
+  padding: 4px 12px 6px;
   border-top: 1px solid var(--line);
 }
 .rail-legend span {
@@ -688,6 +690,24 @@ kbd {
   left: 7px;
   bottom: 7px;
   z-index: 2;
+}
+
+.ano-tags {
+  position: absolute;
+  left: 7px;
+  top: 32px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100% - 50px);
+}
+.chip.ano-tag {
+  background: rgba(232, 87, 160, 0.92);
+  color: #fff;
+  border: 1px solid rgba(232, 87, 160, 0.9);
+  font-size: 11px;
+  padding: 1px 6px;
 }
 
 /* 空格位（未指派相機） */
