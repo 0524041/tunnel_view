@@ -254,6 +254,29 @@ TUNNELVIEW_HOME=/tmp/tvdata uv run python \
 
 測試縫：① 對齊引擎純函式核心（合成 fixture：漏拍／漂移／雙拍／量化）② 內插與防呆 ③ FastAPI 整合層（匯入→查詢→錨點→廣播→併發遷移）。
 
+## 授權條款
+
+本專案採用 [GNU General Public License v3.0 (GPL-3.0-only)](LICENSE) 授權。
+
+```
+Copyright (C) 2026 willywu
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+```
+
+詳見專案根目錄 [LICENSE](LICENSE) 完整條文。
+
 ## 規格文件
 
 - `.spec/tunnel-viewer-mvp.md` — MVP 規格（含效能預算與實測值）

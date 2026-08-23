@@ -1,3 +1,11 @@
+REM Copyright (C) 2026 willywu <pop2585158@gmail.com>
+REM SPDX-License-Identifier: GPL-3.0-only
+REM
+REM This program is free software: you can redistribute it and/or modify
+REM it under the terms of the GNU General Public License as published by
+REM the Free Software Foundation, either version 3 of the License, or
+REM (at your option) any later version.
+
 @echo off
 rem Tunnel View 一鍵啟動（Windows，uv 管理 Python 與依賴）
 rem 用法:

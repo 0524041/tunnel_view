@@ -3,6 +3,7 @@ name = "tunnelview"
 version = "0.1.0"
 description = "隧道多視角檢視平台"
 readme = "README.md"
+license = { text = "GPL-3.0-only" }
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

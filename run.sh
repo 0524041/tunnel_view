@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 willywu <pop2585158@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
 # Tunnel View 一鍵啟動（Linux / macOS，bash 優先，相容 zsh 呼叫）
 # 依賴：curl 或 wget（僅首次安裝 uv 時需要），其餘由 uv 自動管理（含 Python）
 #
