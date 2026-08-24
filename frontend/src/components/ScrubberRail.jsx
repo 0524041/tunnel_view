@@ -84,28 +84,60 @@ export default function ScrubberRail({
   })
 
   const PAD = 16
+  const isReversed = (startM ?? 0) > (endM ?? 0)
 
   const idxToX = (idx, W) => {
     const [v0, v1] = viewRef.current
-    return PAD + ((idx - v0) / Math.max(v1 - v0, 1e-6)) * (W - PAD * 2)
+    const dispIdx = isReversed ? (n - 1 - idx) : idx
+    const dispV0 = isReversed ? (n - 1 - v1) : v0
+    const dispV1 = isReversed ? (n - 1 - v0) : v1
+    return PAD + ((dispIdx - dispV0) / Math.max(dispV1 - dispV0, 1e-6)) * (W - PAD * 2)
   }
 
-  // 里程 → x：在可視群組區間內以 est 線性內插，讓刻度落在真實樁號位置
+  // 里程 → x：在可視群組區間內以 est 線性內插，讓刻度落在真實樁號位置（支援遞增/遞減）
   const mileageToIdx = (m) => {
     const [v0, v1] = viewRef.current
     let lo = Math.max(0, Math.floor(v0))
     let hi = Math.min(n - 1, Math.ceil(v1))
     if (hi <= lo) return lo
-    if (m <= est[lo]) return lo - (est[lo] - m) / Math.max(est[Math.min(lo + 1, n - 1)] - est[lo], 1)
-    if (m >= est[hi]) return hi + (m - est[hi]) / Math.max(est[hi] - est[Math.max(hi - 1, 0)], 1)
-    while (hi - lo > 1) {
-      const mid = (lo + hi) >> 1
-      if (est[mid] < m) lo = mid
-      else hi = mid
+    // 區間外插：按該側斜率外插，無論增減
+    const eLo = est[lo]
+    const eHi = est[hi]
+    const loNext = est[Math.min(lo + 1, n - 1)]
+    const hiPrev = est[Math.max(hi - 1, 0)]
+    const slopeLo = loNext - eLo
+    const slopeHi = eHi - hiPrev
+    const minE = Math.min(eLo, eHi)
+    const maxE = Math.max(eLo, eHi)
+    if (m < minE) {
+      // 在較小里程外
+      if (eHi < eLo) return hi + (m - eHi) / Math.max(slopeHi, 1e-6)
+      return lo - (eLo - m) / Math.max(slopeLo, 1e-6)
     }
-    const e0 = est[lo]
-    const e1 = est[hi]
-    return lo + ((m - e0) / Math.max(e1 - e0, 1e-6)) * (hi - lo)
+    if (m > maxE) {
+      if (eHi > eLo) return hi + (m - eHi) / Math.max(slopeHi, 1e-6)
+      return lo - (eLo - m) / Math.max(-slopeLo, 1e-6)
+    }
+    // 區間內線性內插，線性掃描找跨段（n≤10k，刻度≤~30，O(n*刻度) 可接受且穩健處理遞增/遞減）
+    for (let i = lo; i < hi; i++) {
+      const a = est[i]
+      const b = est[i + 1]
+      if ((a <= m && m <= b) || (a >= m && m >= b)) {
+        const t = (m - a) / Math.max(b - a, 1e-6)
+        return i + t
+      }
+    }
+    // 兜底二分（遞增/遞減皆處理）
+    const isInc = (est[0] ?? 0) <= (est[n - 1] ?? 0)
+    let l = lo, h = hi
+    while (h - l > 1) {
+      const mid = (l + h) >> 1
+      if (isInc ? est[mid] < m : est[mid] > m) l = mid
+      else h = mid
+    }
+    const e0 = est[l]
+    const e1 = est[h]
+    return l + ((m - e0) / Math.max(e1 - e0, 1e-6)) * (h - l)
   }
 
   function draw() {
@@ -278,7 +310,10 @@ export default function ScrubberRail({
       const rect = el.getBoundingClientRect()
       const px = e.clientX - rect.left
       const [v0, v1] = viewRef.current
-      const idxAtCursor = v0 + ((px - PAD) / (w - PAD * 2)) * (v1 - v0)
+      const dispV0 = isReversed ? (n - 1 - v1) : v0
+      const dispV1 = isReversed ? (n - 1 - v0) : v1
+      const dispAtCursor = dispV0 + ((px - PAD) / (w - PAD * 2)) * (dispV1 - dispV0)
+      const idxAtCursor = isReversed ? (n - 1 - dispAtCursor) : dispAtCursor
       const k = Math.exp(e.deltaY * 0.0015)
       let span = Math.max(8, Math.min((v1 - v0) * k, n))
       let a = idxAtCursor - ((idxAtCursor - v0) / (v1 - v0)) * span
@@ -286,7 +321,7 @@ export default function ScrubberRail({
     }
     el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)
-  }, [n])
+  }, [n, isReversed])
 
   const onPointerDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -320,7 +355,10 @@ export default function ScrubberRail({
     const hit = findHit(px)
     const [v0, v1] = d.start
     const frac = (px - PAD) / Math.max(d.w - PAD * 2, 1)
-    const idx = Math.max(0, Math.min(n - 1, Math.round(v0 + frac * (v1 - v0))))
+    const dispV0 = isReversed ? (n - 1 - v1) : v0
+    const dispV1 = isReversed ? (n - 1 - v0) : v1
+    const dispIdx = dispV0 + frac * (dispV1 - dispV0)
+    const idx = Math.max(0, Math.min(n - 1, Math.round(isReversed ? (n - 1 - dispIdx) : dispIdx)))
     onJump(hit ? hit.seq : idx)
   }
 

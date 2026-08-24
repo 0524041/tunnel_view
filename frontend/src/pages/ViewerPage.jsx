@@ -140,6 +140,7 @@ export default function ViewerPage({ tunnelId, active }) {
     [groups, current, ov],
   )
 
+  const isReversed = (ov?.start_m ?? 0) > (ov?.end_m ?? 0)
   useEffect(() => {
     if (!active || !ov) return
     const onKey = (e) => {
@@ -164,16 +165,16 @@ export default function ViewerPage({ tunnelId, active }) {
       }
       if (helpOpen) return
       if (mode === 'anomalies') return
-      if (e.key === 'ArrowLeft') goto(current - 1)
-      else if (e.key === 'ArrowRight') goto(current + 1)
-      else if (e.key === 'Home') goto(0)
-      else if (e.key === 'End') goto(total - 1)
+      if (e.key === 'ArrowLeft') goto(isReversed ? current + 1 : current - 1)
+      else if (e.key === 'ArrowRight') goto(isReversed ? current - 1 : current + 1)
+      else if (e.key === 'Home') goto(isReversed ? total - 1 : 0)
+      else if (e.key === 'End') goto(isReversed ? 0 : total - 1)
       else if (e.key === 'Enter') setDialogOpen(true)
       else if (e.key.toLowerCase() === 'm') setReviewOpen(true)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, ov, origView, dialogOpen, searchOpen, reviewOpen, helpOpen, mode, current, total, goto])
+  }, [active, ov, isReversed, origView, dialogOpen, searchOpen, reviewOpen, helpOpen, mode, current, total, goto])
 
   const togglePanel = (which) => {
     if (which === 'anchors') {
