@@ -51,7 +51,7 @@ export default function WizardPage({ onDone, onCancel }) {
     if (!folder) return
     api.fsList(folder).then((d) => {
       if (d.sample) {
-        setThumbs((t) => ({ ...t, [seq]: api.fsPhotoUrl(`${d.path}/${d.sample}`) }))
+        setThumbs((t) => ({ ...t, [seq]: api.fsPhotoUrl(`${d.path}/${d.sample}`, 320) }))
       }
     }).catch(() => {})
   }

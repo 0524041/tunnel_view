@@ -586,11 +586,39 @@ def create_app(workspace: Workspace) -> FastAPI:
         }
 
     @app.get("/api/fs/photo")
-    def fs_photo(path: str):
+    def fs_photo(path: str, w: int | None = None):
         f = Path(path).expanduser()
         if not f.is_file() or f.suffix.lower() not in {".jpg", ".jpeg"}:
             raise HTTPException(404, "照片不存在")
-        return FileResponse(f, media_type="image/jpeg")
+        if w is None:
+            return FileResponse(f, media_type="image/jpeg")
+        # 縮圖快取（NAS 首張預覽加速）：w>0 時 draft+resize 並快取，與 /photos 共用策略但 key 為路徑雜湊
+        try:
+            w = int(w)
+            if w <= 0 or w > 3000:
+                raise ValueError()
+        except Exception:
+            raise HTTPException(400, "w 需為 1~3000")
+        cache_dir = Path(workspace.root) / ".thumb_cache"
+        # 以路徑雜湊避免非法檔名與過長路徑
+        import hashlib
+
+        key = hashlib.sha1(str(f.resolve()).encode()).hexdigest()[:16]
+        needs_transpose = _needs_exif_transpose(f)
+        cache = cache_dir / f"fs_{key}_{w}{'_t' if needs_transpose else ''}.jpg"
+        if not cache.exists():
+            img = Image.open(f)
+            if needs_transpose:
+                img = ImageOps.exif_transpose(img)
+                img = img.convert("RGB")
+            else:
+                img.draft("RGB", (w * 2, w * 2))
+                img = img.convert("RGB")
+            ratio = w / img.width if img.width else 1
+            img = img.resize((w, max(1, round(img.height * ratio))), Image.BILINEAR)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            img.save(cache, "JPEG", quality=87)
+        return FileResponse(cache, media_type="image/jpeg")
 
     @app.get("/api/tunnels/{tid}/info")
     def tunnel_info(tid: int):

@@ -138,7 +138,10 @@ export const api = {
   fsList: (path) =>
     fetch(`/api/fs/list?path=${encodeURIComponent(path || '')}`).then(handle),
 
-  fsPhotoUrl: (path) => `/api/fs/photo?path=${encodeURIComponent(path)}`,
+  fsPhotoUrl: (path, w) => {
+    const qs = `path=${encodeURIComponent(path)}${w ? `&w=${w}` : ''}`
+    return `/api/fs/photo?${qs}`
+  },
 
   info: (tid) => fetch(`/api/tunnels/${tid}/info`).then(handle),
 
