@@ -49,6 +49,7 @@ export default function ViewerPage({ tunnelId, active }) {
   const [anoRefresh, setAnoRefresh] = useState(0)
   const [anomsBySeq, setAnomsBySeq] = useState({})
   const [locateTarget, setLocateTarget] = useState(null)
+  const [displayOrder, setDisplayOrder] = useState(() => localStorage.getItem('tv_display_order') || 'asc')
 
   const refreshMeta = useCallback(() => {
     api.overview(tunnelId).then(setOv).catch(() => {})
@@ -140,7 +141,9 @@ export default function ViewerPage({ tunnelId, active }) {
     [groups, current, ov],
   )
 
-  const isReversed = (ov?.start_m ?? 0) > (ov?.end_m ?? 0)
+  const isReversed = displayOrder === 'asc'
+    ? (ov?.start_m ?? 0) > (ov?.end_m ?? 0)
+    : (ov?.start_m ?? 0) < (ov?.end_m ?? 0)
   useEffect(() => {
     if (!active || !ov) return
     const onKey = (e) => {
@@ -246,6 +249,16 @@ export default function ViewerPage({ tunnelId, active }) {
           </span>
           {anchoredHere && <span className="chip blue">🔒 已錨定</span>}
         </div>
+        <button
+          type="button"
+          className="btn small"
+          title="切換里程顯示順序（僅顯示，不動儲存）"
+          onClick={() => {
+            const next = displayOrder === 'asc' ? 'desc' : 'asc'
+            setDisplayOrder(next)
+            localStorage.setItem('tv_display_order', next)
+          }}
+        >⇅ {displayOrder === 'asc' ? '小→大' : '大→小'}</button>
         <div className="vspacer" />
         <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>合併邊界（M）</button>
         <button
@@ -319,6 +332,7 @@ export default function ViewerPage({ tunnelId, active }) {
             anomsBySeq={anomsBySeq}
             startM={ov.start_m}
             endM={ov.end_m}
+            isReversed={isReversed}
             current={current}
             onJump={goto}
             onOpenHelp={() => setHelpOpen(true)}

@@ -36,6 +36,7 @@ export default function WizardPage({ onDone, onCancel }) {
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [displayOrder, setDisplayOrder] = useState(() => localStorage.getItem('tv_display_order') || 'asc')
 
   const startM = parseMileage(startText)
   const endM = parseMileage(endText)
@@ -271,8 +272,22 @@ export default function WizardPage({ onDone, onCancel }) {
               </div>
             </div>
 
-            <p className="hint" style={{ marginTop: 14 }}>
-              初始推算里程：{formatMileage(Math.min(startM, endM))} ～ {formatMileage(Math.max(startM, endM))}。
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+              <button
+                type="button"
+                className="btn small"
+                onClick={() => {
+                  const next = displayOrder === 'asc' ? 'desc' : 'asc'
+                  setDisplayOrder(next)
+                  localStorage.setItem('tv_display_order', next)
+                }}
+              >⇅ {displayOrder === 'asc' ? '小→大' : '大→小'}</button>
+              <span className="hint" style={{ margin: 0 }}>僅顯示切換，不影響儲存與錨點</span>
+            </div>
+            <p className="hint" style={{ marginTop: 8 }}>
+              初始推算里程：{displayOrder === 'asc'
+                ? `${formatMileage(Math.min(startM, endM))} ～ ${formatMileage(Math.max(startM, endM))}`
+                : `${formatMileage(Math.max(startM, endM))} ～ ${formatMileage(Math.min(startM, endM))}`}。
               建立後可隨時輸入實體里程牌錨點即時修正。
             </p>
             {error && <p className="err-text">{error}</p>}

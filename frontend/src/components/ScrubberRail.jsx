@@ -39,6 +39,7 @@ export default function ScrubberRail({
   current,
   startM,
   endM,
+  isReversed: isReversedProp,
   onJump,
   onOpenHelp,
 }) {
@@ -84,7 +85,9 @@ export default function ScrubberRail({
   })
 
   const PAD = 16
-  const isReversed = (startM ?? 0) > (endM ?? 0)
+  // isReversed 由外層 Viewer 依 displayOrder 決定，fallback 為 start>end（小→大預設）
+  const _fallbackReversed = (startM ?? 0) > (endM ?? 0)
+  const isReversed = isReversedProp ?? _fallbackReversed
 
   const idxToX = (idx, W) => {
     const [v0, v1] = viewRef.current
