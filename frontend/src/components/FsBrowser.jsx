@@ -33,7 +33,7 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd])
 
-  const sampleUrl = data?.sample ? api.fsPhotoUrl(`${data.path}/${data.sample}`) : null
+  const sampleUrl = data?.sample ? api.fsPhotoUrl(`${data.path}/${data.sample}`, 320) : null
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>

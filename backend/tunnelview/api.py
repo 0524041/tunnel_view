@@ -570,12 +570,26 @@ def create_app(workspace: Workspace) -> FastAPI:
         target = Path(path).expanduser()
         if not target.is_dir():
             raise HTTPException(404, "資料夾不存在")
-        entries = sorted(target.iterdir(), key=lambda x: x.name.lower())
-        dirs = [e.name for e in entries if e.is_dir() and not e.name.startswith(".")]
-        sample = next(
-            (e.name for e in entries if e.is_file() and e.suffix.lower() in {".jpg", ".jpeg"}),
-            None,
-        )
+        # scandir：is_dir/is_file 直接用列舉快取，避免 NAS/SMB 上每檔一次 stat 的網路往返
+        dirs: list[str] = []
+        sample: str | None = None
+        with os.scandir(target) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir():
+                        if not entry.name.startswith("."):
+                            dirs.append(entry.name)
+                        continue
+                    if (
+                        entry.is_file()
+                        and Path(entry.name).suffix.lower() in {".jpg", ".jpeg"}
+                        # scandir 順序任意，取檔名最小者為第一張（與舊 iterdir+sort 行為一致）
+                        and (sample is None or entry.name.lower() < sample.lower())
+                    ):
+                        sample = entry.name
+                except OSError:
+                    continue
+        dirs.sort(key=lambda n: n.lower())
         return {
             "path": str(target),
             "parent": str(target.parent) if target.parent != target else None,
