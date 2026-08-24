@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import os
 from collections import defaultdict
 from datetime import datetime
@@ -40,10 +41,12 @@ from .importer import CameraInput, ImportRequest, TunnelImporter
 from .service import MergeConflict, TunnelService
 
 # 輕量任務暫存（供輪詢式進度，TTL 15min，LRU 8）
+import threading
 import time
 import uuid
 
 _jobs: dict[str, dict] = {}
+_job_threads: dict[str, threading.Thread] = {}
 _JOBS_TTL = 15 * 60
 _JOBS_MAX = 8
 
@@ -56,6 +59,11 @@ def _prune_jobs():
     while len(_jobs) > _JOBS_MAX:
         oldest = min(_jobs, key=lambda k: _jobs[k].get("created_at", 0))
         _jobs.pop(oldest, None)
+
+
+def _scan_fingerprint(body: ImportBody) -> str:
+    """掃描結果只取決於機位資料夾清單（順序敏感）；commit 時比對以免誤用他人掃描。"""
+    return json.dumps([c.folder for c in body.cameras], ensure_ascii=False)
 
 
 class CameraBody(BaseModel):
@@ -237,28 +245,56 @@ def create_app(workspace: Workspace) -> FastAPI:
             total = enum_info["total_valid"]
         except Exception as e:
             raise HTTPException(400, str(e))
-        # 同步執行 extract+align（1萬張量級 <30s），立即回 done 供輪詢
-        try:
+        # 背景執行緒做 scan+align：POST 立即回 running，前端輪詢 GET 取進度；
+        # 掃描結果暫存於 job，commit 帶同一 job_id 時免二次 EXIF 掃描
+        _jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "stage": "scan",
+            "total": total,
+            "done": 0,
+            "req": req,
+            "scan_fp": _scan_fingerprint(body),
+            "created_at": time.time(),
+            "enum_info": enum_info,
+        }
+
+        def _progress(n: int):
+            job = _jobs.get(job_id)
+            if job is not None:
+                job["done"] = min(int(job.get("done", 0)) + n, total)
+
+        def _run():
             from dataclasses import asdict
-            preview = importer.preview(req)
-            # ImportPreview dataclass -> dict，cameras 為 dataclass list 需 asdict
-            preview_dict = asdict(preview)
-            _jobs[job_id] = {
-                "job_id": job_id,
-                "status": "done",
-                "stage": "done",
-                "total": total,
-                "done": total,
-                "preview": preview_dict,
-                "req": req,
-                "created_at": time.time(),
-                "enum_info": enum_info,
-            }
-            # 同步回覆 job_id + 預覽，前端輪詢 GET 立即拿到 done
-            return {"job_id": job_id, "status": "done", "total": total, "done": total, "preview": preview_dict, "enum_info": enum_info}
-        except Exception as e:
-            _jobs[job_id] = {"job_id": job_id, "status": "failed", "error": str(e), "created_at": time.time()}
-            raise HTTPException(500, str(e))
+
+            job = _jobs.get(job_id)
+            if job is None:
+                return
+            try:
+                scanned_photos = importer.scan(req, progress=_progress)
+                preview = importer.preview(req, scanned=scanned_photos)
+                _jobs[job_id] = {
+                    **job,
+                    "status": "done",
+                    "stage": "done",
+                    "done": total,
+                    "preview": asdict(preview),
+                    "scan": scanned_photos,
+                }
+            except Exception as e:
+                cur = _jobs.get(job_id)
+                if cur is not None:
+                    _jobs[job_id] = {
+                        "job_id": job_id,
+                        "status": "failed",
+                        "error": str(e),
+                        "created_at": cur.get("created_at", time.time()),
+                    }
+
+        th = threading.Thread(target=_run, name=f"import-job-{job_id}", daemon=True)
+        _job_threads[job_id] = th
+        th.start()
+        return {"job_id": job_id, "status": "running", "total": total, "done": 0}
 
     @app.get("/api/import/jobs/{job_id}")
     def get_import_job(job_id: str):
@@ -271,21 +307,33 @@ def create_app(workspace: Workspace) -> FastAPI:
     @app.delete("/api/import/jobs/{job_id}")
     def delete_import_job(job_id: str):
         _jobs.pop(job_id, None)
+        _job_threads.pop(job_id, None)
         return {"ok": True}
 
     @app.post("/api/tunnels")
     def create_tunnel(body: ImportBody, job_id: str | None = None):
-        # job_id 快路徑：若帶有效 job_id 且 reqHash 一致則復用（本期簡化：僅檢查資料夾未變）
-        if job_id and job_id in _jobs:
-            # 直接用暫存的 preview 結果提交（仍需重跑 commit 的寫庫，但 scan 已由 job 完成，可視為去重複）
-            # 為保證正確率，本期仍走正常 commit（scan 已快取於 .scan_cache，實際 IO 已減半）
-            pass
-        info = importer.commit(_to_req(body))
+        # job_id 快路徑：preview 時的掃描結果仍在暫存且機位資料夾指紋一致時直接復用，
+        # 免對（可能是慢速網路碟的）原始資料夾做第二次 EXIF 掃描
+        scanned = None
+        if job_id:
+            th = _job_threads.get(job_id)
+            if th is not None and th.is_alive():
+                th.join(timeout=600)  # 防禦：前端未等 done 就送 commit 時，等背景掃描完成
+            job = _jobs.get(job_id)
+            if (
+                job
+                and job.get("status") == "done"
+                and job.get("scan") is not None
+                and job.get("scan_fp") == _scan_fingerprint(body)
+            ):
+                scanned = job["scan"]
+        info = importer.commit(_to_req(body), scanned=scanned)
         for cam in body.cameras:
             workspace.add_recent_path(cam.folder)
         # 清理對應 job
         if job_id:
             _jobs.pop(job_id, None)
+            _job_threads.pop(job_id, None)
         return {"tunnel_id": info.tunnel_id}
 
     @app.get("/api/cache/scan")
@@ -730,6 +778,19 @@ def create_app(workspace: Workspace) -> FastAPI:
         _invalidate_cache(workspace.root, tid, photo_id=pid)
         hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
         return {"ok": True}
+
+    @app.post("/api/tunnels/{tid}/cameras/{seq}/unify")
+    def unify_camera_orientation(tid: int, seq: int, body: PhotoRotationBody):
+        # 批次轉正：只接受 90/270（180 不改變直橫、0 無意義）
+        if body.angle not in (90, 270):
+            raise HTTPException(400, "統一方向僅接受 90 或 270")
+        try:
+            updated = service.unify_camera_orientation(tid, seq, body.angle)
+        except KeyError:
+            raise HTTPException(404, "相機不存在")
+        _invalidate_cache(workspace.root, tid)
+        hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
+        return {"ok": True, "updated": updated}
 
     @app.get("/api/tunnels/{tid}/camera_thumbs")
     def camera_thumbs(tid: int):

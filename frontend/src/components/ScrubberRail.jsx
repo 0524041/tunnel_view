@@ -15,18 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useEffect, useRef, useState } from 'react'
+import { fmtMileage, pickStep, clampView, zoomView, followCurrent, idxToX, xToIdx } from '../lib/scrubberMath.js'
 
-const fmt = (m) => `K${Math.floor(m / 1000)}+${String(m % 1000).padStart(3, '0')}`
-const STEP_CANDIDATES = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000]
 const ANOMALY_COLOR = '#e857a0'
-
-function pickStep(metersPerPx, minPx = 90) {
-  const need = metersPerPx * minPx
-  for (const s of STEP_CANDIDATES) {
-    if (s >= need) return s
-  }
-  return 2000
-}
 
 export default function ScrubberRail({
   tunnelId,
@@ -48,7 +39,7 @@ export default function ScrubberRail({
   const n = est?.length ?? 0
   const [view, setView] = useState([0, Math.min(n, 60)])
   const viewRef = useRef(view)
-  viewRef.current = view
+  viewRef.current = n ? clampView(view[0], view[1], n) : view
   const dragRef = useRef(null)
   const sizeRef = useRef({ w: 0, h: 0 })
   const hitRef = useRef([])
@@ -69,9 +60,16 @@ export default function ScrubberRail({
     })
   }
 
+  // 檢視窗狀態與資料長度同步（n 變動時夾回合法範圍）
   useEffect(() => {
-    setView(([a, b]) => (b > n ? [0, Math.min(n, b)] : [a, b]))
+    if (n > 0) setView(([a, b]) => clampView(a, b, n))
   }, [n])
+
+  // 檢視跟隨：鍵盤/跳轉讓 current 離開可視範圍時，視窗自動平移跟上
+  useEffect(() => {
+    if (!n || current == null) return
+    setView((v) => followCurrent(clampView(v[0], v[1], n), current, n))
+  }, [current, n])
 
   useEffect(() => {
     const wrap = wrapRef.current
@@ -89,19 +87,18 @@ export default function ScrubberRail({
   const _fallbackReversed = (startM ?? 0) > (endM ?? 0)
   const isReversed = isReversedProp ?? _fallbackReversed
 
-  const idxToX = (idx, W) => {
+  const dispPair = () => {
     const [v0, v1] = viewRef.current
-    const dispIdx = isReversed ? (n - 1 - idx) : idx
-    const dispV0 = isReversed ? (n - 1 - v1) : v0
-    const dispV1 = isReversed ? (n - 1 - v0) : v1
-    return PAD + ((dispIdx - dispV0) / Math.max(dispV1 - dispV0, 1e-6)) * (W - PAD * 2)
+    return isReversed ? [n - 1 - v1, n - 1 - v0] : [v0, v1]
   }
+  const toDispIdx = (idx) => (isReversed ? n - 1 - idx : idx)
+  const fromDispIdx = (dispIdx) => (isReversed ? n - 1 - dispIdx : dispIdx)
 
   // 里程 → x：在可視群組區間內以 est 線性內插，讓刻度落在真實樁號位置（支援遞增/遞減）
   const mileageToIdx = (m) => {
-    const [v0, v1] = viewRef.current
-    let lo = Math.max(0, Math.floor(v0))
-    let hi = Math.min(n - 1, Math.ceil(v1))
+    const [dv0, dv1] = dispPair()
+    let lo = Math.max(0, Math.floor(dv0))
+    let hi = Math.min(n - 1, Math.ceil(dv1))
     if (hi <= lo) return lo
     // 區間外插：按該側斜率外插，無論增減
     const eLo = est[lo]
@@ -113,7 +110,6 @@ export default function ScrubberRail({
     const minE = Math.min(eLo, eHi)
     const maxE = Math.max(eLo, eHi)
     if (m < minE) {
-      // 在較小里程外
       if (eHi < eLo) return hi + (m - eHi) / Math.max(slopeHi, 1e-6)
       return lo - (eLo - m) / Math.max(slopeLo, 1e-6)
     }
@@ -121,7 +117,6 @@ export default function ScrubberRail({
       if (eHi > eLo) return hi + (m - eHi) / Math.max(slopeHi, 1e-6)
       return lo - (eLo - m) / Math.max(-slopeLo, 1e-6)
     }
-    // 區間內線性內插，線性掃描找跨段（n≤10k，刻度≤~30，O(n*刻度) 可接受且穩健處理遞增/遞減）
     for (let i = lo; i < hi; i++) {
       const a = est[i]
       const b = est[i + 1]
@@ -130,7 +125,6 @@ export default function ScrubberRail({
         return i + t
       }
     }
-    // 兜底二分（遞增/遞減皆處理）
     const isInc = (est[0] ?? 0) <= (est[n - 1] ?? 0)
     let l = lo, h = hi
     while (h - l > 1) {
@@ -160,67 +154,86 @@ export default function ScrubberRail({
     ctx.clearRect(0, 0, W, H)
 
     const [v0, v1] = viewRef.current
-    // 雙層佈局：上層 28px（照片群組點位），下層 44px（里程均分刻度），共 72px
-    const upperH = 28
-    const gapY = upperH
-    const lowerAxisY = upperH + 14
-    const lowerLabelY = lowerAxisY + 12
-    const totalH = 72
+    // 版面：上層 30px 環片點位帶，下層「孔腔」里程軸 42px
+    const boreTopY = 46
+    const boreMidY = 52
+    const boreBotY = 60
+    const labelPlateY = boreTopY - 15
 
-    // 下層里程刻度：由小到大均分（與群組同動，以 seq 為單位）
     const sortedStart = Math.min(startM ?? est[0] ?? 0, endM ?? est[n - 1] ?? 0)
     const sortedEnd = Math.max(startM ?? est[0] ?? 0, endM ?? est[n - 1] ?? 0)
-    // 可視里程區間由 v0~v1 的 est 推算，確保縮放同動
     const m0vis = est[Math.max(0, Math.round(v0))] ?? sortedStart
     const m1vis = est[Math.min(n - 1, Math.round(v1))] ?? sortedEnd
-    const visMin = Math.min(m0vis, m1vis, sortedStart)
-    const visMax = Math.max(m0vis, m1vis, sortedEnd)
-    const metersPerPx = Math.max((Math.abs(m1vis - m0vis)) / Math.max(W - PAD * 2, 1), 0.5)
+    const metersPerPx = Math.max(Math.abs(m1vis - m0vis) / Math.max(W - PAD * 2, 1), 0.5)
     const step = pickStep(metersPerPx)
     const minorStep = step / 5
     const firstM = Math.ceil(sortedStart / minorStep) * minorStep
     const lastM = sortedEnd
 
+    // ── 孔腔雙壁（隧道斷面意象：兩條壁線夾出通道）──
+    ctx.strokeStyle = 'rgba(154,163,173,0.38)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(PAD - 6, boreTopY + 0.5)
+    ctx.lineTo(W - PAD + 6, boreTopY + 0.5)
+    ctx.moveTo(PAD - 6, boreBotY + 0.5)
+    ctx.lineTo(W - PAD + 6, boreBotY + 0.5)
+    ctx.stroke()
+
+    // ── 枕木刻度＋樁號牌 ──
     ctx.font = '10px "IBM Plex Mono", monospace'
     ctx.textAlign = 'center'
     for (let m = firstM; m <= lastM + 1e-6; m += minorStep) {
-      const x = idxToX(mileageToIdx(m), W)
+      const dispIdx = mileageToIdx(m)
+      const x = idxToX(dispIdx, ...dispPair(), W, PAD)
       if (x < PAD - 2 || x > W - PAD + 2) continue
       const isMajor = Math.abs(m % step) < 1e-6 || Math.abs((m % step) - step) < 1e-6
-      ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.42)' : 'rgba(255,255,255,0.12)'
-      ctx.lineWidth = 1
+      // 枕木：貫穿雙壁之間的短橫木
+      ctx.strokeStyle = isMajor ? 'rgba(200,208,216,0.55)' : 'rgba(154,163,173,0.22)'
+      ctx.lineWidth = isMajor ? 1.5 : 1
       ctx.beginPath()
-      ctx.moveTo(x + 0.5, isMajor ? lowerAxisY - 8 : lowerAxisY - 3)
-      ctx.lineTo(x + 0.5, lowerAxisY)
+      ctx.moveTo(x + 0.5, boreTopY + (isMajor ? 0 : 3))
+      ctx.lineTo(x + 0.5, boreBotY - (isMajor ? 0 : 3))
       ctx.stroke()
       if (isMajor) {
-        ctx.fillStyle = 'rgba(154,163,173,0.95)'
-        ctx.fillText(fmt(Math.round(m)), x, lowerLabelY)
+        // 樁號牌：壁上方的小圓角標籤
+        const label = fmtMileage(Math.round(m))
+        const tw = ctx.measureText(label).width
+        ctx.fillStyle = 'rgba(23,27,33,0.9)'
+        ctx.beginPath()
+        ctx.roundRect(x - tw / 2 - 4, labelPlateY, tw + 8, 13, 3)
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(154,163,173,0.35)'
+        ctx.lineWidth = 1
+        ctx.stroke()
+        ctx.fillStyle = 'rgba(178,186,194,0.95)'
+        ctx.fillText(label, x, labelPlateY + 10)
       }
     }
 
-    // 下層基準軸
-    ctx.strokeStyle = 'rgba(255,255,255,0.24)'
-    ctx.lineWidth = 1.5
-    ctx.beginPath()
-    ctx.moveTo(PAD - 6, lowerAxisY + 0.5)
-    ctx.lineTo(W - PAD + 6, lowerAxisY + 0.5)
-    ctx.stroke()
+    // 起訖樁號：僅在進入可視範圍時顯示（避免「看得到 27k 卻點不到」的幽靈標籤）
+    const xStart = idxToX(mileageToIdx(sortedStart), ...dispPair(), W, PAD)
+    const xEnd = idxToX(mileageToIdx(sortedEnd), ...dispPair(), W, PAD)
+    ctx.font = '600 10px "IBM Plex Mono", monospace'
+    if (xStart >= PAD - 2 && xStart <= W - PAD + 2) {
+      ctx.fillStyle = 'rgba(120,200,120,0.85)'
+      ctx.textAlign = 'left'
+      ctx.fillText('▶ ' + fmtMileage(sortedStart), Math.max(PAD - 8, xStart + 5), boreBotY + 10)
+    }
+    if (xEnd >= PAD - 2 && xEnd <= W - PAD + 2) {
+      ctx.fillStyle = 'rgba(232,87,87,0.85)'
+      ctx.textAlign = 'right'
+      ctx.fillText(fmtMileage(sortedEnd) + ' ◀', Math.min(W - PAD + 8, xEnd - 5), boreBotY + 10)
+    }
 
-    // 起訖樁號釘選（由小到大顯示）
-    ctx.fillStyle = 'rgba(89,98,108,0.95)'
-    ctx.textAlign = 'left'
-    ctx.fillText(fmt(sortedStart), PAD - 10, lowerAxisY - 12)
-    ctx.textAlign = 'right'
-    ctx.fillText(fmt(sortedEnd), W - PAD + 10, lowerAxisY - 12)
-
-    // 上層：每群組淺色點位 + 分層標注（與下層同動、以 seq 為單位）
+    // ── 上層：襯砌環片點位 ──
     const hits = []
+    const ringJointEvery = Math.max(1, Math.round((v1 - v0) / 80))
     for (let i = Math.max(0, Math.ceil(v0)); i < Math.min(n, v1 + 1); i++) {
-      const x = idxToX(i, W)
-      // 淺色群組點位（每群組一刻度）
-      ctx.fillStyle = 'rgba(255,255,255,0.32)'
-      ctx.fillRect(x - 0.5, 8, 1, 8)
+      const x = idxToX(toDispIdx(i), ...dispPair(), W, PAD)
+      const isRingJoint = i % ringJointEvery === 0
+      ctx.fillStyle = isRingJoint ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.28)'
+      ctx.fillRect(x - 0.5, isRingJoint ? 6 : 8, 1, isRingJoint ? 10 : 8)
       if (anchored[i]) {
         ctx.fillStyle = '#4fa3ff'
         ctx.fillRect(x - 4, 3, 8, 7)
@@ -242,43 +255,46 @@ export default function ScrubberRail({
         ctx.closePath()
         ctx.fill()
       }
-      if (ano?.[i] > 0 && !hideAnomaly) {
-        ctx.fillStyle = ANOMALY_COLOR
-        const w = ano[i] > 1 ? 5 : 3
-        ctx.beginPath()
-        ctx.roundRect(x - w / 2, 6, w, 7, 1.5)
-        ctx.fill()
-        hits.push({ x, seq: i })
-      } else if (ano?.[i] > 0) {
+      if (ano?.[i] > 0) {
+        if (!hideAnomaly) {
+          ctx.fillStyle = ANOMALY_COLOR
+          const w = ano[i] > 1 ? 5 : 3
+          ctx.beginPath()
+          ctx.roundRect(x - w / 2, 6, w, 7, 1.5)
+          ctx.fill()
+        }
         hits.push({ x, seq: i })
       }
     }
-    // 上下層分隔線
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
-    ctx.beginPath()
-    ctx.moveTo(PAD - 6, gapY + 0.5)
-    ctx.lineTo(W - PAD + 6, gapY + 0.5)
-    ctx.stroke()
     hitRef.current = hits
 
-    // 當前位置指示＋樁號浮標
+    // ── 當前位置：頭燈光束＋游標 ──
     if (current >= v0 && current <= v1) {
-      const x = idxToX(current, W)
+      const x = idxToX(toDispIdx(current), ...dispPair(), W, PAD)
+      const glow = ctx.createLinearGradient(x, 0, x, H)
+      glow.addColorStop(0, 'rgba(255,179,0,0.22)')
+      glow.addColorStop(1, 'rgba(255,179,0,0.04)')
+      ctx.strokeStyle = glow
+      ctx.lineWidth = 6
+      ctx.beginPath()
+      ctx.moveTo(x, 2)
+      ctx.lineTo(x, boreBotY - 2)
+      ctx.stroke()
       ctx.strokeStyle = '#ffb300'
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.moveTo(x, 2)
-      ctx.lineTo(x, H - 10)
+      ctx.lineTo(x, boreBotY)
       ctx.stroke()
       ctx.fillStyle = '#ffb300'
       ctx.beginPath()
-      ctx.moveTo(x - 5, H - 10)
-      ctx.lineTo(x + 5, H - 10)
-      ctx.lineTo(x, H - 2)
+      ctx.moveTo(x - 5, boreBotY - 1)
+      ctx.lineTo(x + 5, boreBotY - 1)
+      ctx.lineTo(x, boreBotY + 8)
       ctx.closePath()
       ctx.fill()
 
-      const label = fmt(est[current] ?? 0)
+      const label = fmtMileage(est[current] ?? 0)
       ctx.font = '600 11px "IBM Plex Mono", monospace'
       const tw = ctx.measureText(label).width
       const bx = Math.min(Math.max(x - tw / 2 - 8, PAD - 8), W - PAD + 8 - tw - 16)
@@ -297,13 +313,6 @@ export default function ScrubberRail({
     }
   }
 
-  const clampView = ([a, b]) => {
-    let s = b - a
-    if (s < 8) s = Math.min(8, n)
-    a = Math.max(-s * 0.15, Math.min(a, n - s * 0.85))
-    return [a, a + s]
-  }
-
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
@@ -312,15 +321,11 @@ export default function ScrubberRail({
       const { w } = sizeRef.current
       const rect = el.getBoundingClientRect()
       const px = e.clientX - rect.left
-      const [v0, v1] = viewRef.current
-      const dispV0 = isReversed ? (n - 1 - v1) : v0
-      const dispV1 = isReversed ? (n - 1 - v0) : v1
-      const dispAtCursor = dispV0 + ((px - PAD) / (w - PAD * 2)) * (dispV1 - dispV0)
-      const idxAtCursor = isReversed ? (n - 1 - dispAtCursor) : dispAtCursor
+      const [dv0, dv1] = dispPair()
+      const dispAtCursor = xToIdx(px, dv0, dv1, w, PAD)
+      const idxAtCursor = fromDispIdx(dispAtCursor)
       const k = Math.exp(e.deltaY * 0.0015)
-      let span = Math.max(8, Math.min((v1 - v0) * k, n))
-      let a = idxAtCursor - ((idxAtCursor - v0) / (v1 - v0)) * span
-      setView(clampView([a, a + span]))
+      setView((v) => zoomView(v, idxAtCursor, k, n))
     }
     el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)
@@ -334,7 +339,6 @@ export default function ScrubberRail({
   const onPointerMove = (e) => {
     const d = dragRef.current
     if (!d) {
-      // hover：偵測異狀標記
       const rect = wrapRef.current.getBoundingClientRect()
       const hit = findHit(e.clientX - rect.left)
       setTip(hit ? { ...hit, px: e.clientX - rect.left } : null)
@@ -345,7 +349,7 @@ export default function ScrubberRail({
     if (!d.moved) return
     const span = d.start[1] - d.start[0]
     const shift = (-dx / Math.max(d.w - PAD * 2, 1)) * span
-    setView(clampView([d.start[0] + shift, d.start[1] + shift]))
+    setView(clampView(d.start[0] + shift, d.start[1] + shift, n))
   }
 
   const onPointerUp = (e) => {
@@ -356,12 +360,9 @@ export default function ScrubberRail({
     const px = e.clientX - rect.left
     // 點擊異狀標記優先跳轉
     const hit = findHit(px)
-    const [v0, v1] = d.start
-    const frac = (px - PAD) / Math.max(d.w - PAD * 2, 1)
-    const dispV0 = isReversed ? (n - 1 - v1) : v0
-    const dispV1 = isReversed ? (n - 1 - v0) : v1
-    const dispIdx = dispV0 + frac * (dispV1 - dispV0)
-    const idx = Math.max(0, Math.min(n - 1, Math.round(isReversed ? (n - 1 - dispIdx) : dispIdx)))
+    const [dv0, dv1] = isReversed ? [n - 1 - d.start[1], n - 1 - d.start[0]] : d.start
+    const dispIdx = xToIdx(px, dv0, dv1, d.w, PAD)
+    const idx = Math.max(0, Math.min(n - 1, Math.round(fromDispIdx(dispIdx))))
     onJump(hit ? hit.seq : idx)
   }
 
@@ -375,7 +376,7 @@ export default function ScrubberRail({
           <div className="rail-tip" style={{ left: Math.min(Math.max(tip.px, 120), (sizeRef.current.w || 400) - 130) }}>
             <img src={`/api/tunnels/${tunnelId}/photos/${tipData.photo_id}?w=240`} alt="" />
             <div className="rail-tip-body">
-              <b className="mono">{fmt(est[tip.seq] ?? 0)}</b>
+              <b className="mono">{fmtMileage(est[tip.seq] ?? 0)}</b>
               <span>{tipData.types.join('、')}</span>
             </div>
           </div>
@@ -391,7 +392,7 @@ export default function ScrubberRail({
           <i style={{ background: ANOMALY_COLOR }} /> 異狀 {hideAnomaly ? '◯' : '👁'}
         </button>
         <span><i style={{ background: '#ffb300', height: 2 }} /> 當前位置</span>
-        <em className="hint rail-shortcuts">←/→ 群組 · Enter 錨點 · M 合併邊界 · Home/End · Ctrl+G 跳轉 · 點照片開原圖 · 滾輪縮放/拖曳 · 上層群組點/下層里程均分</em>
+        <em className="hint rail-shortcuts">←/→ 群組 · Enter 錨點 · M 合併邊界 · Home/End · Ctrl+G 跳轉 · 點照片開原圖 · 滾輪縮放/拖曳 · 上層環片點位／下層孔腔里程</em>
         <span className="vspacer" />
         <button type="button" className="btn small ghost rail-help" title="說明與快捷鍵" onClick={() => onOpenHelp?.()}>?</button>
       </div>

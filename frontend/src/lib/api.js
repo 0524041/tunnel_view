@@ -67,12 +67,32 @@ export const api = {
       body: JSON.stringify(body),
     }).then(handle),
 
-  createTunnel: (body) =>
-    fetch('/api/tunnels', {
+  // 背景 job 版：立即回 running，輪詢 getImportJob 取掃描進度
+  createImportJob: (body) =>
+    fetch('/api/import/jobs/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(handle),
+
+  getImportJob: (id) => fetch(`/api/import/jobs/${id}`).then(handle),
+
+  createTunnel: (body, jobId) =>
+    fetch(`/api/tunnels${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(handle),
+
+  unifyCameraOrientation: async (tid, seq, angle) => {
+    const r = await fetch(`/api/tunnels/${tid}/cameras/${seq}/unify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ angle }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  },
 
   overview: (tid) => fetch(`/api/tunnels/${tid}/overview`).then(handle),
 

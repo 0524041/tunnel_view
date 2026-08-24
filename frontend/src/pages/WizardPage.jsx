@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { parseMileage, formatMileage } from '../lib/mileage'
 import FsBrowser from '../components/FsBrowser'
@@ -35,6 +35,11 @@ export default function WizardPage({ onDone, onCancel }) {
   const [pickerFor, setPickerFor] = useState(null)
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState(null) // {done,total}
+  const jobIdRef = useRef(null)
+  // 方向統一對話框：{tid, items:[{seq,camera,landscape,portrait}]}
+  const [unify, setUnify] = useState(null)
+  const [unifyChoices, setUnifyChoices] = useState({}) // seq -> 90|270|skip
   const [error, setError] = useState('')
   const [displayOrder, setDisplayOrder] = useState(() => localStorage.getItem('tv_display_order') || 'asc')
 
@@ -74,17 +79,39 @@ export default function WizardPage({ onDone, onCancel }) {
   const runPreview = async () => {
     setBusy(true)
     setError('')
+    setProgress(null)
     try {
-      setPreview(
-        await api.previewImport({
-          name: name.trim(),
-          start_m: startM,
-          end_m: endM,
-          tolerance_seconds: tolerance,
-          layout_cols: layoutCols,
-          cameras,
-        }),
-      )
+      const body = {
+        name: name.trim(),
+        start_m: startM,
+        end_m: endM,
+        tolerance_seconds: tolerance,
+        layout_cols: layoutCols,
+        cameras,
+      }
+      const job = await api.createImportJob(body)
+      jobIdRef.current = job.job_id
+      // 輪詢進度（掃描 x/total 張），完成後取預覽結果
+      await new Promise((resolve, reject) => {
+        const poll = async () => {
+          try {
+            const j = await api.getImportJob(job.job_id)
+            if (j.status === 'running') {
+              setProgress({ done: j.done ?? 0, total: j.total ?? 0 })
+              setTimeout(poll, 1200)
+            } else if (j.status === 'done') {
+              setProgress(null)
+              setPreview(j.preview)
+              resolve()
+            } else {
+              reject(new Error(j.error || '分析失敗'))
+            }
+          } catch (e) {
+            reject(e)
+          }
+        }
+        poll()
+      })
       setStep(3)
     } catch (e) {
       setError(e.message)
@@ -93,18 +120,55 @@ export default function WizardPage({ onDone, onCancel }) {
     }
   }
 
+  const applyUnifyAndFinish = async () => {
+    const { tid } = unify
+    for (const item of unify.items) {
+      const angle = unifyChoices[item.seq]
+      if (angle === 90 || angle === 270) {
+        try {
+          await api.unifyCameraOrientation(tid, item.seq, angle)
+        } catch {
+          /* 單機位失敗不阻斷進入檢視；之後可在照片上單張轉正 */
+        }
+      }
+    }
+    onDone(tid, name.trim())
+  }
+
   const commit = async () => {
     setBusy(true)
     try {
-      const r = await api.createTunnel({
-        name: name.trim(),
-        start_m: startM,
-        end_m: endM,
-        tolerance_seconds: tolerance,
-        layout_cols: layoutCols,
-        cameras,
-      })
-      onDone(r.tunnel_id, name.trim())
+      const r = await api.createTunnel(
+        {
+          name: name.trim(),
+          start_m: startM,
+          end_m: endM,
+          tolerance_seconds: tolerance,
+          layout_cols: layoutCols,
+          cameras,
+        },
+        jobIdRef.current,
+      )
+      const tid = r.tunnel_id
+      // 方向統一：偵測混合直橫式的機位，先詢問轉正方向再進入檢視
+      let mixed = []
+      try {
+        const info = await api.info(tid)
+        const stats = info?.report?.orientation_stats || []
+        mixed = stats.filter((s) => s.minority)
+      } catch {
+        /* 無統計資訊就跳過 */
+      }
+      if (mixed.length) {
+        setUnify({
+          tid,
+          items: mixed.map((s) => ({ ...s })),
+        })
+        setUnifyChoices(Object.fromEntries(mixed.map((s) => [s.seq, 90])))
+        setBusy(false)
+        return
+      }
+      onDone(tid, name.trim())
     } catch (e) {
       setError(e.message)
       setBusy(false)
@@ -228,6 +292,23 @@ export default function WizardPage({ onDone, onCancel }) {
             </div>
 
             {error && <p className="err-text">{error}</p>}
+            {busy && progress && (
+              <div style={{ marginTop: 12 }}>
+                <div className="hint" style={{ marginBottom: 4 }}>
+                  正在讀取照片 EXIF：{progress.done} / {progress.total} 張（可離開頁面，背景會繼續）
+                </div>
+                <div style={{ height: 6, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%`,
+                      background: 'var(--amber, #ffb300)',
+                      transition: 'width 0.6s ease',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             <div className="wiz-actions">
               <button type="button" className="btn" onClick={() => setStep(1)}>上一步</button>
               <button
@@ -236,7 +317,48 @@ export default function WizardPage({ onDone, onCancel }) {
                 disabled={!cameras.every((c) => c.name.trim() && c.folder.trim()) || busy}
                 onClick={runPreview}
               >
-                {busy ? '分析中…' : '執行對齊分析'}
+                {busy ? (progress ? `掃描中 ${progress.done}/${progress.total}…` : '準備中…') : '執行對齊分析'}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {unify && (
+          <section>
+            <span className="display" style={{ fontSize: 18 }}>偵測到混合直橫式照片</span>
+            <p className="hint" style={{ marginTop: 6 }}>
+              以下機位的照片方向不一致。選擇轉正方向讓少數派照片對齊多數派（可預覽後再調整）；
+              選「略過」則保留現狀，之後仍可在照片上單張旋轉。
+            </p>
+            <table className="pv-table">
+              <thead><tr><th>視角</th><th>橫式</th><th>直式</th><th>少數派</th><th>處理</th></tr></thead>
+              <tbody>
+                {unify.items.map((s) => (
+                  <tr key={s.seq}>
+                    <td>{s.camera}</td>
+                    <td className="mono">{s.landscape}</td>
+                    <td className="mono">{s.portrait}</td>
+                    <td>{s.minority === 'portrait' ? '直式' : '橫式'}</td>
+                    <td>
+                      {[90, 270, 'skip'].map((v) => (
+                        <button
+                          key={String(v)}
+                          type="button"
+                          className={`btn small ${(unifyChoices[s.seq] ?? 90) === v ? 'primary' : 'ghost'}`}
+                          style={{ marginRight: 4 }}
+                          onClick={() => setUnifyChoices((c) => ({ ...c, [s.seq]: v }))}
+                        >
+                          {v === 90 ? '↻ 順時針' : v === 270 ? '↺ 逆時針' : '略過'}
+                        </button>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="wiz-actions">
+              <button type="button" className="btn" disabled={busy} onClick={applyUnifyAndFinish}>
+                完成並進入檢視
               </button>
             </div>
           </section>

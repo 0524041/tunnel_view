@@ -73,10 +73,13 @@ def stride_sample(paths: list[Path], n: int) -> list[Path]:
 def bench_scan(paths: list[Path]) -> tuple[float, int]:
     t0 = time.perf_counter()
     ok = 0
-    for p in paths:
+    for i, p in enumerate(paths, 1):
         t, source, w, h = read_exif_and_dims(p)
         if t is not None or w is not None:
             ok += 1
+        if i % 200 == 0:
+            rate = (time.perf_counter() - t0) / i * 1000
+            print(f"    ... {i}/{len(paths)} 張（{rate:.0f} ms/張）", flush=True)
     return time.perf_counter() - t0, ok
 
 

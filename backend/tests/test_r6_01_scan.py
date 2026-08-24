@@ -139,3 +139,29 @@ class TestBadFileHandling:
         # preview should still succeed and count at least good file
         preview = importer.preview(req)
         assert preview.cameras[0].photo_count >= 1
+
+
+class TestScanWorkersAndProgress:
+    """掃描併發預設值與進度回報契約。"""
+
+    def test_default_scan_workers_fixed_16(self, monkeypatch):
+        import os
+
+        from tunnelview.importer import _default_scan_workers
+
+        # IO-bound 併發不吃 CPU 核數：小 VM（2核）也應得 16，而非 cpu*4
+        monkeypatch.setattr(os, "cpu_count", lambda: 2)
+        assert _default_scan_workers() == 16
+
+    def test_scan_reports_progress(self, ws, tmp_path):
+        base = datetime(2026, 5, 28, 20, 49, 0)
+        d0 = tmp_path / "cam0"
+        d0.mkdir()
+        for i in range(10):
+            make_jpg(d0 / f"P{i:02d}.JPG", base + timedelta(seconds=i))
+        req = ImportRequest(name="t", start_m=0, end_m=100, tolerance_seconds=2.0,
+                            cameras=[CameraInput(name="A", folder=str(d0))])
+        ticks = []
+        photos = TunnelImporter(ws).scan(req, progress=ticks.append)
+        assert len(photos) == 10
+        assert ticks and ticks[-1] == 10

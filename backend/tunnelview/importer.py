@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,25 @@ from .db import Workspace, TunnelInfo
 from .interp import compute_all
 
 IMAGE_EXTS = {".jpg", ".jpeg"}
+
+_SCAN_WORKERS_ENV = "TUNNELVIEW_SCAN_WORKERS"
+
+
+def _default_scan_workers() -> int:
+    """EXIF 掃描併發數：網路碟（雲端掛載）延遲主導，IO-bound 併發收益大。
+
+    可用環境變數 TUNNELVIEW_SCAN_WORKERS 覆寫（例如遇供應商限流時調低）。
+    """
+    try:
+        v = int(os.environ.get(_SCAN_WORKERS_ENV, "") or 0)
+        if v > 0:
+            return v
+    except ValueError:
+        pass
+    # IO-bound（網路碟延遲主導）不吃 CPU 核數，固定 16；
+    # 實測（雲端掛載 /mnt/y，14218 張全掃）：8→526s、16→379s、32→359s，
+    # 供應端限流使 >16 後收益趨零
+    return 16
 
 
 @dataclass(frozen=True)
@@ -134,26 +154,35 @@ def read_exif_and_dims(path: Path) -> tuple[datetime | None, str, int | None, in
         return None, "mtime", None, None
 
 
-def compute_aspect_anomalies(conn) -> list[dict]:
-    """各機位「套用機位旋轉後」的顯示比例多數派，少數派標記 aspect_anomaly=1。
+def _effective_rotation(cam_rot, photo_override) -> int:
+    """顯示方向的有效旋轉：機位旋轉＋照片手動轉正，取 %180 判斷直橫交換。"""
+    return ((cam_rot or 0) + (photo_override or 0)) % 180
 
-    直接以 photos 表已存的 width/height 計算（匯入與重新對齊共用）。
+
+def compute_aspect_anomalies(conn) -> list[dict]:
+    """各機位「套用機位旋轉與照片轉正後」的顯示比例多數派，少數派標記 aspect_anomaly=1。
+
+    直接以 photos 表已存的 width/height 計算（匯入與重新對齊共用）；
+    rotation_override 已轉正的照片不再標記。
     回傳異常清單供報告使用。
     """
     conn.execute("UPDATE photos SET aspect_anomaly = 0")
     anomalies: list[dict] = []
     cams = conn.execute("SELECT id, seq, name, rotation FROM cameras ORDER BY seq").fetchall()
     for cam in cams:
-        rot = (cam["rotation"] or 0) % 180
         photos = conn.execute(
-            "SELECT id, rel_path, width, height FROM photos "
+            "SELECT id, rel_path, width, height, COALESCE(rotation_override, 0) AS rov FROM photos "
             "WHERE camera_id = ? AND COALESCE(manual_missing, 0) = 0 "
             "AND width IS NOT NULL AND height IS NOT NULL",
             (cam["id"],),
         ).fetchall()
         ratios: dict[int, list] = {}
         for p in photos:
-            w, h = (p["height"], p["width"]) if rot else (p["width"], p["height"])
+            w, h = (
+                (p["height"], p["width"])
+                if _effective_rotation(cam["rotation"], p["rov"]) % 180
+                else (p["width"], p["height"])
+            )
             ratios.setdefault(round(w / h * 100), []).append(p)
         if not ratios:
             continue
@@ -167,6 +196,38 @@ def compute_aspect_anomalies(conn) -> list[dict]:
                     {"camera": cam["name"], "rel_path": p["rel_path"], "width": p["width"], "height": p["height"]}
                 )
     return anomalies
+
+
+def orientation_stats(conn) -> list[dict]:
+    """各機位直/橫式統計（含機位旋轉與照片轉正），供 UI 提出批次轉正建議。
+
+    minority 為少數派方向（'landscape'|'portrait'），僅在兩種方向都存在時回報。
+    """
+    stats: list[dict] = []
+    cams = conn.execute("SELECT id, seq, name, rotation FROM cameras ORDER BY seq").fetchall()
+    for cam in cams:
+        rows = conn.execute(
+            "SELECT width, height, COALESCE(rotation_override, 0) AS rov FROM photos "
+            "WHERE camera_id = ? AND COALESCE(manual_missing, 0) = 0 "
+            "AND width IS NOT NULL AND height IS NOT NULL",
+            (cam["id"],),
+        ).fetchall()
+        landscape = portrait = 0
+        for r in rows:
+            w, h = (
+                (r["height"], r["width"])
+                if _effective_rotation(cam["rotation"], r["rov"]) % 180
+                else (r["width"], r["height"])
+            )
+            if h > w:
+                portrait += 1
+            else:
+                landscape += 1
+        minority = None
+        if landscape and portrait:
+            minority = "portrait" if portrait < landscape else "landscape"
+        stats.append({"camera": cam["name"], "seq": cam["seq"], "landscape": landscape, "portrait": portrait, "minority": minority})
+    return stats
 
 
 class TunnelImporter:
@@ -219,29 +280,60 @@ class TunnelImporter:
             total_valid += valid_jpg
         return {"cameras": cameras, "total_valid": total_valid}
 
-    def scan(self, req: ImportRequest) -> list[_ScannedPhoto]:
+    def _list_camera_files(self, folder: str) -> list[Path]:
+        """列舉單機位頂層 JPG（scandir，不開檔），依檔名排序保證決定性。"""
+        d = Path(folder)
+        if not d.is_dir():
+            raise FileNotFoundError(f"相機資料夾不存在：{folder}")
+        entries: list[Path] = []
+        with os.scandir(d) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                p = Path(entry.path)
+                if p.suffix.lower() not in IMAGE_EXTS:
+                    continue
+                entries.append(p)
+        entries.sort(key=lambda p: p.name.lower())
+        return entries
+
+    def scan(
+        self,
+        req: ImportRequest,
+        max_workers: int | None = None,
+        progress=None,
+    ) -> list[_ScannedPhoto]:
         photos: list[_ScannedPhoto] = []
-        # 併發解碼：單次開檔同時取 EXIF 與尺寸，正確率不變但半 IO
+        # 併發解碼：單次開檔同時取 EXIF 與尺寸；IO-bound（網路碟延遲主導），
+        # ThreadPoolExecutor 即可大幅縮短；結果依 entries 順序收集，輸出與序列版完全一致
+        if max_workers is None:
+            max_workers = _default_scan_workers()
         for seq, cam in enumerate(req.cameras):
-            folder = Path(cam.folder)
-            if not folder.is_dir():
-                raise FileNotFoundError(f"相機資料夾不存在：{cam.folder}")
-            # 使用 scandir 列舉，避免 sorted(iterdir) 全載入兩次 open
-            entries: list[Path] = []
-            with os.scandir(folder) as it:
-                for entry in it:
+            entries = self._list_camera_files(cam.folder)
+            done = 0
+
+            def _read(p: Path) -> tuple:
+                nonlocal done
+                r = read_exif_and_dims(p)
+                done += 1
+                if progress is not None and done % 50 == 0:
                     try:
-                        if not entry.is_file():
-                            continue
-                    except OSError:
-                        continue
-                    p = Path(entry.path)
-                    if p.suffix.lower() not in IMAGE_EXTS:
-                        continue
-                    entries.append(p)
-            entries.sort(key=lambda p: p.name.lower())
-            for p in entries:
-                t, source, w, h = read_exif_and_dims(p)
+                        progress(done)
+                    except Exception:
+                        pass
+                return r
+
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                reads = list(ex.map(_read, entries))
+            if progress is not None and entries:
+                try:
+                    progress(done)
+                except Exception:
+                    pass
+            for p, (t, source, w, h) in zip(entries, reads):
                 flagged = False
                 if t is None:
                     try:
@@ -255,8 +347,9 @@ class TunnelImporter:
                 photos.append(_ScannedPhoto(seq, p, t, source, flagged, width=w, height=h))
         return photos
 
-    def preview(self, req: ImportRequest) -> ImportPreview:
-        result, photos, series = self._align(req)
+    def preview(self, req: ImportRequest, scanned: list[_ScannedPhoto] | None = None) -> ImportPreview:
+        """對齊預覽。可傳入預先掃描的結果 `scanned`（與 commit 共用，免重掃）。"""
+        result, photos, series = self._align(req, scanned=scanned)
         cams = [
             CameraPreview(
                 name=req.cameras[s.camera_index].name,
@@ -276,8 +369,10 @@ class TunnelImporter:
             flagged_count=flagged_n,
         )
 
-    def commit(self, req: ImportRequest) -> TunnelInfo:
-        result, photos, series = self._align(req)
+    def commit(self, req: ImportRequest, scanned: list[_ScannedPhoto] | None = None) -> TunnelInfo:
+        """建立隧道。可傳入 preview 階段的掃描結果 `scanned` 以免二次 EXIF 掃描
+        （照片檔不可變的前提下結果一致；未傳入則自行重掃）。"""
+        result, photos, series = self._align(req, scanned=scanned)
 
         info = self.ws.create_tunnel(
             name=req.name,
@@ -410,6 +505,7 @@ class TunnelImporter:
                         for s in series
                     ],
                     "aspect_anomalies": anomalies,
+                    "orientation_stats": orientation_stats(conn),
                     "imported_at": datetime.now().isoformat(timespec="seconds"),
                 }
                 conn.execute(
@@ -421,8 +517,17 @@ class TunnelImporter:
             conn.close()
         return info
 
-    def _align(self, req: ImportRequest):
-        photos = self.scan(req)
+    def _recompute_anomalies(self, tunnel_id) -> None:
+        """重算指定隧道的比例異常旗標（人工轉正後呼叫）。"""
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                compute_aspect_anomalies(conn)
+        finally:
+            conn.close()
+
+    def _align(self, req: ImportRequest, scanned: list[_ScannedPhoto] | None = None):
+        photos = scanned if scanned is not None else self.scan(req)
         if not photos:
             raise ValueError("所選資料夾內沒有任何 JPG")
         series = self._series(photos)

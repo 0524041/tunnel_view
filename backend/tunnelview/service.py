@@ -760,6 +760,54 @@ class TunnelService:
         finally:
             conn.close()
 
+    def unify_camera_orientation(self, tunnel_id: int, camera_seq: int, angle: int) -> int:
+        """把機位內「顯示方向與多數派不同」的照片批次轉正（rotation_override=angle）。
+
+        僅少數派方向存在時有效；回傳更新張數。完成後重算比例異常旗標。
+        """
+        from .importer import compute_aspect_anomalies
+
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                cam = conn.execute(
+                    "SELECT id, rotation FROM cameras WHERE seq = ?", (camera_seq,)
+                ).fetchone()
+                if cam is None:
+                    raise KeyError(camera_seq)
+                rows = conn.execute(
+                    "SELECT id, width, height, COALESCE(rotation_override, 0) AS rov FROM photos "
+                    "WHERE camera_id = ? AND COALESCE(manual_missing, 0) = 0 "
+                    "AND width IS NOT NULL AND height IS NOT NULL",
+                    (cam["id"],),
+                ).fetchall()
+                landscape = portrait = 0
+                eff: list[tuple[int, bool]] = []  # (photo_id, is_portrait)
+                for r in rows:
+                    w, h = (
+                        (r["height"], r["width"])
+                        if ((cam["rotation"] or 0) + r["rov"]) % 180
+                        else (r["width"], r["height"])
+                    )
+                    is_p = h > w
+                    eff.append((r["id"], is_p))
+                    if is_p:
+                        portrait += 1
+                    else:
+                        landscape += 1
+                if not landscape or not portrait:
+                    return 0
+                majority_portrait = portrait > landscape
+                mismatched = [pid for pid, is_p in eff if is_p != majority_portrait]
+                conn.executemany(
+                    "UPDATE photos SET rotation_override = ? WHERE id = ?",
+                    [(angle, pid) for pid in mismatched],
+                )
+                compute_aspect_anomalies(conn)
+                return len(mismatched)
+        finally:
+            conn.close()
+
     # ---------- 資訊面板聚合 ----------
 
     def info(self, tunnel_id: int) -> dict:

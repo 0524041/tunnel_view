@@ -110,6 +110,185 @@ class TestTunnelEndpoints:
         assert ws.list_tunnels() == []
 
 
+class TestImportJobScanReuse:
+    """preview→commit 免二次掃描契約：帶有效 job_id 時 commit 不得重掃 EXIF。"""
+
+    @staticmethod
+    def _body(d0, d1, name="x"):
+        return {
+            "name": name,
+            "start_m": 23000,
+            "end_m": 24200,
+            "tolerance_seconds": 2.0,
+            "cameras": [
+                {"name": "左壁", "folder": str(d0)},
+                {"name": "右壁", "folder": str(d1)},
+            ],
+        }
+
+    @pytest.fixture()
+    def scan_spy(self, monkeypatch):
+        """包裝 TunnelImporter.scan 記錄呼叫次數。"""
+        from tunnelview.importer import TunnelImporter
+
+        calls = []
+        orig = TunnelImporter.scan
+
+        def spy(self, req, max_workers=None, progress=None):
+            calls.append(1)
+            return orig(self, req, max_workers=max_workers, progress=progress)
+
+        monkeypatch.setattr(TunnelImporter, "scan", spy)
+        return calls
+
+    @staticmethod
+    def _wait_done(c, job_id, timeout=10):
+        import time as _time
+
+        deadline = _time.perf_counter() + timeout
+        while _time.perf_counter() < deadline:
+            job = c.get(f"/api/import/jobs/{job_id}").json()
+            if job["status"] != "running":
+                return job
+            _time.sleep(0.02)
+        raise AssertionError("job 未在時限內完成")
+
+    def _fresh_client(self, tmp_path):
+        ws = Workspace(tmp_path / "ws_job")
+        ws.init()
+        return TestClient(create_app(ws))
+
+    def test_commit_with_job_id_reuses_scan(self, cam_dirs, tmp_path, scan_spy):
+        d0, d1 = cam_dirs
+        c = self._fresh_client(tmp_path)
+        r = c.post("/api/import/jobs/preview", json=self._body(d0, d1))
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        assert self._wait_done(c, job_id)["status"] == "done"
+        assert len(scan_spy) == 1
+
+        r = c.post("/api/tunnels", params={"job_id": job_id}, json=self._body(d0, d1))
+        assert r.status_code == 200
+        # 復用掃描：不得對原始資料夾做第二次 EXIF 掃描
+        assert len(scan_spy) == 1
+        tid = r.json()["tunnel_id"]
+        data = c.get("/api/tunnels").json()
+        assert len(data) == 1 and data[0]["name"] == "x"
+        photos = c.get(f"/api/tunnels/{tid}/groups", params={"around": 2, "before": 2, "after": 2}).json()
+        assert len(photos) >= 3
+
+    def test_commit_without_job_id_rescans(self, cam_dirs, tmp_path, scan_spy):
+        d0, d1 = cam_dirs
+        c = self._fresh_client(tmp_path)
+        r = c.post("/api/import/jobs/preview", json=self._body(d0, d1))
+        self._wait_done(c, r.json()["job_id"])
+        assert len(scan_spy) == 1
+
+        r = c.post("/api/tunnels", json=self._body(d0, d1))
+        assert r.status_code == 200
+        assert len(scan_spy) == 2  # 無 job_id → 正常重掃
+
+    def test_commit_fingerprint_mismatch_rescans(self, cam_dirs, tmp_path, scan_spy):
+        d0, d1 = cam_dirs
+        c = self._fresh_client(tmp_path)
+        r = c.post("/api/import/jobs/preview", json=self._body(d0, d1))
+        job_id = r.json()["job_id"]
+        assert self._wait_done(c, job_id)["status"] == "done"
+
+        # 機位順序對調 → 指紋不符，必須重掃且結果仍正確
+        body = self._body(d1, d0)
+        r = c.post("/api/tunnels", params={"job_id": job_id}, json=body)
+        assert r.status_code == 200
+        assert len(scan_spy) == 2
+
+
+class TestImportJobBackground:
+    """preview job 必須立即回應、背景執行、可輪詢進度——不得讓 HTTP 請求卡完整個掃描。"""
+
+    @staticmethod
+    def _body(d0, d1):
+        return {
+            "name": "x",
+            "start_m": 23000,
+            "end_m": 24200,
+            "tolerance_seconds": 2.0,
+            "cameras": [
+                {"name": "左壁", "folder": str(d0)},
+                {"name": "右壁", "folder": str(d1)},
+            ],
+        }
+
+    def test_post_returns_immediately_and_polls_to_done(self, cam_dirs, tmp_path, monkeypatch):
+        import time as _time
+
+        from tunnelview.importer import TunnelImporter
+
+        orig = TunnelImporter.scan
+
+        def slow(self, req, max_workers=None, progress=None):
+            _time.sleep(0.6)
+            return orig(self, req, max_workers=max_workers, progress=progress)
+
+        monkeypatch.setattr(TunnelImporter, "scan", slow)
+        ws = Workspace(tmp_path / "ws_bg")
+        ws.init()
+        c = TestClient(create_app(ws))
+        d0, d1 = cam_dirs
+
+        t0 = _time.perf_counter()
+        r = c.post("/api/import/jobs/preview", json=self._body(d0, d1))
+        elapsed = _time.perf_counter() - t0
+
+        assert r.status_code == 200
+        assert elapsed < 0.4, f"POST 應立即回傳，實際等了 {elapsed:.2f}s"
+        body = r.json()
+        assert body["status"] == "running"
+        job_id = body["job_id"]
+
+        deadline = _time.perf_counter() + 10
+        job = None
+        while _time.perf_counter() < deadline:
+            job = c.get(f"/api/import/jobs/{job_id}").json()
+            if job["status"] != "running":
+                break
+            _time.sleep(0.05)
+        assert job["status"] == "done"
+        assert job["preview"]["group_count"] == 5
+        assert job["total"] >= 8
+        assert job["done"] == job["total"]
+
+    def test_failed_scan_reports_error(self, cam_dirs, tmp_path, monkeypatch):
+        from tunnelview.importer import TunnelImporter
+
+        def boom(self, req, max_workers=None, progress=None):
+            raise RuntimeError("網路碟斷線")
+
+        monkeypatch.setattr(TunnelImporter, "scan", boom)
+        ws = Workspace(tmp_path / "ws_bg2")
+        ws.init()
+        c = TestClient(create_app(ws))
+        d0, d1 = cam_dirs
+
+        r = c.post("/api/import/jobs/preview", json=self._body(d0, d1))
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+
+        import time as _time
+
+        deadline = _time.perf_counter() + 5
+        job = None
+        while _time.perf_counter() < deadline:
+            job = c.get(f"/api/import/jobs/{job_id}").json()
+            if job["status"] != "running":
+                break
+            _time.sleep(0.05)
+        assert job["status"] == "failed"
+        assert "網路碟斷線" in job["error"]
+        # 失敗後 commit 不得誤用掃描快照：fallback 重掃同樣會撞上壞碟而失敗
+        with pytest.raises(RuntimeError, match="網路碟斷線"):
+            c.post("/api/tunnels", params={"job_id": job_id}, json=self._body(d0, d1))
+
+
 class TestGroupWindow:
     def test_window_around_center(self, client):
         tid = client.tunnel_id

@@ -131,6 +131,41 @@ class TestCommit:
             conn.close()
 
 
+class TestScannedReuse:
+    """commit 復用 preview 掃描結果：結果與自行重掃完全一致，免二次 EXIF IO。"""
+
+    def test_commit_with_scanned_matches_fresh_commit(self, ws, cam_dirs):
+        req = _request(cam_dirs, None)
+        importer = TunnelImporter(ws)
+
+        scanned = importer.scan(req)
+        preview = importer.preview(req, scanned=scanned)
+        assert preview.group_count == 3
+
+        info = importer.commit(req, scanned=scanned)
+        tunnels = ws.list_tunnels()
+        assert len(tunnels) == 1
+        conn = ws.open_tunnel(info.tunnel_id)
+        try:
+            n_photos = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+            assert n_photos == 5
+            rows = conn.execute(
+                "SELECT rel_path, exif_time, time_source FROM photos ORDER BY id"
+            ).fetchall()
+            assert all(r["time_source"] == "exif" for r in rows)
+            assert len({r["rel_path"] for r in rows}) == 5
+        finally:
+            conn.close()
+
+    def test_scan_output_deterministic_under_concurrency(self, ws, cam_dirs):
+        req = _request(cam_dirs, None)
+        importer = TunnelImporter(ws)
+        a = [(p.camera_seq, p.path.name, p.t) for p in importer.scan(req)]
+        b = [(p.camera_seq, p.path.name, p.t) for p in importer.scan(req)]
+        c = [(p.camera_seq, p.path.name, p.t) for p in importer.scan(req, max_workers=1)]
+        assert a == b == c
+
+
 def make_camera_jpg(path, dt_original):
     """模擬真實相機（Sony）JPG：DateTimeOriginal 存於 Exif SubIFD 而非 IFD0。"""
     img = Image.new("RGB", (8, 6), color=(30, 30, 30))
