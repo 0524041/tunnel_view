@@ -91,6 +91,17 @@ with sync_playwright() as p:
     print(f"   預覽統計: {' | '.join(stats.split())} （耗時 {elapsed:.1f}s）")
     page.screenshot(path=f"{SHOT}_w3.png", full_page=True)
     page.click("text=確認建立隧道")
+    # R8 方向統一對話框：資料含少數派直橫時出現；e2e 一律略過保留現狀
+    try:
+        page.wait_for_selector("text=偵測到混合直橫式", timeout=5000)
+        skips = page.locator("button", has_text="略過")
+        n = skips.count()
+        for i in range(n):  # 按鈕點擊後仍存在（僅切換選取樣式），逐列各點一次
+            skips.nth(i).click()
+            page.wait_for_timeout(120)
+        page.click("text=完成並進入檢視")
+    except Exception:
+        pass  # 無混合機位時不會有對話框
     page.wait_for_selector(".viewer", timeout=30000)
     page.wait_for_load_state("networkidle")
     check("建立並進入檢視器", True)

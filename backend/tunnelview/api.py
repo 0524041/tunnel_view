@@ -28,37 +28,64 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
+from . import thumbs
 from .db import Workspace
 from .fsutil import platform_roots
 from .interp import AnchorOrderError, AnchorRangeError
-from .importer import CameraInput, ImportRequest, TunnelImporter
+from .importer import CameraInput, ImportRequest, TunnelImporter, _ScannedPhoto
 from .service import MergeConflict, TunnelService
 
-# 輕量任務暫存（供輪詢式進度，TTL 15min，LRU 8）
+# 輕量任務暫存（輪詢式進度）；狀態同步落地 index.db（R9），
+# server 重啟後 done job 仍可由 fingerprint 復用掃描結果、running 標記 interrupted
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 _jobs: dict[str, dict] = {}
 _job_threads: dict[str, threading.Thread] = {}
-_JOBS_TTL = 15 * 60
-_JOBS_MAX = 8
+_JOBS_TTL = 24 * 3600
+_JOBS_MAX = 32
 
-def _prune_jobs():
-    now = time.time()
-    expired = [k for k, v in _jobs.items() if now - v.get("created_at", now) > _JOBS_TTL]
-    for k in expired:
-        _jobs.pop(k, None)
-    # LRU：超過上限刪最舊
-    while len(_jobs) > _JOBS_MAX:
-        oldest = min(_jobs, key=lambda k: _jobs[k].get("created_at", 0))
-        _jobs.pop(oldest, None)
+
+def _scan_to_json(scanned: list[_ScannedPhoto]) -> list[dict]:
+    return [
+        {
+            "c": p.camera_seq,
+            "p": str(p.path),
+            "t": p.t.isoformat(timespec="seconds"),
+            "s": p.time_source,
+            "f": p.flagged,
+            "w": p.width,
+            "h": p.height,
+            "o": p.orientation,
+        }
+        for p in scanned
+    ]
+
+
+def _scan_from_json(items: list[dict]) -> list[_ScannedPhoto]:
+    from datetime import datetime as _dt
+
+    return [
+        _ScannedPhoto(
+            int(i["c"]),
+            Path(i["p"]),
+            _dt.fromisoformat(i["t"]),
+            i["s"],
+            bool(i["f"]),
+            i.get("w"),
+            i.get("h"),
+            i.get("o", 1),
+        )
+        for i in items
+    ]
 
 
 def _scan_fingerprint(body: ImportBody) -> str:
@@ -80,6 +107,7 @@ class ImportBody(BaseModel):
     tolerance_seconds: float = Field(gt=0)
     layout_cols: str | int = "auto"
     cameras: list[CameraBody] = Field(min_length=1)
+    project_id: int | None = None
 
 
 class LayoutBody(BaseModel):
@@ -127,26 +155,122 @@ class DefectTypeBody(BaseModel):
     name: str = Field(min_length=1)
 
 
+class ProjectBody(BaseModel):
+    name: str = Field(min_length=1)
+
+
+class MoveBody(BaseModel):
+    project_id: int | None = None
+
+
+def _read_orientation_tag(path: Path) -> int:
+    """讀 EXIF orientation(274)；讀取失敗視為 1（不轉正）。"""
+    try:
+        with Image.open(path) as im:
+            return int((im.getexif() or {}).get(274, 1) or 1)
+    except Exception:
+        return 1
+
+
+def _request_etags(request: Request) -> set[str]:
+    """解析 If-None-Match（可為逗號清單或 *；* 以空集合回表示全部符合由呼叫端判斷）。"""
+    raw = request.headers.get("if-none-match")
+    if not raw:
+        return set()
+    raw = raw.strip()
+    if raw == "*":
+        return {"*"}
+    return {t.strip().removeprefix("W/") for t in raw.split(",") if t.strip()}
+
+
+def _delete_thumbs_for(root: Path, tid: int, photo_ids: list[int]) -> None:
+    """刪除指定照片的所有縮圖快取（任何寬度/版本）。"""
+    if not photo_ids:
+        return
+    cache_dir = root / ".thumb_cache"
+    if not cache_dir.is_dir():
+        return
+    prefixes = tuple(f"{tid}_{pid}_" for pid in photo_ids)
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.name.startswith(prefixes):
+            f.unlink(missing_ok=True)
+
+
+def _bump_pixels(service: TunnelService, workspace: Workspace, tid: int, photo_ids: list[int]) -> None:
+    """像素版本遞增＋舊縮圖清除——僅真正改變像素的操作（R9 精準失效）。"""
+    if not photo_ids:
+        return
+    service.bump_pixel_versions(tid, photo_ids)
+    _delete_thumbs_for(workspace.root, tid, photo_ids)
+
+
+def _pregen_thumbs(workspace: Workspace, tid: int) -> None:
+    """commit 後背景預生成 w=1600 縮圖（R9）：把冷啟風暴變暖快取。
+
+    與請求內生成共用 thumbs.single_flight；失敗靜默（留待請求時重試）。
+    """
+    try:
+        conn = workspace.open_tunnel(tid)
+        rows = conn.execute(
+            "SELECT p.id AS pid, c.root_path AS root, p.rel_path AS rel, "
+            "COALESCE(p.rotation_override, -1) AS rov, COALESCE(c.rotation, 0) AS crot, "
+            "COALESCE(p.pixel_version, 0) AS pv, p.orientation AS orient "
+            "FROM photos p JOIN cameras c ON c.id = p.camera_id "
+            # orientation NULL（舊隧道未 backfill）先跳過——避免以預設值生成
+            # 錯誤方向的縮圖後被同名快取命中；留待請求時 backfill 再生成
+            "WHERE p.orientation IS NOT NULL ORDER BY p.id"
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return
+        try:
+            workers = max(1, int(os.environ.get("TUNNELVIEW_THUMB_WORKERS", "") or 4))
+        except ValueError:
+            workers = 4
+        cache_dir = Path(workspace.root) / ".thumb_cache"
+
+        def gen(r):
+            src = Path(r["root"]) / r["rel"]
+            if not src.is_file():
+                return
+            # 防競爭：旋轉/轉正可能已遞增版本——寫出前重查，避免復活舊版縮圖
+            try:
+                chk = workspace.open_tunnel(tid)
+                cur = chk.execute(
+                    "SELECT pixel_version FROM photos WHERE id = ?", (r["pid"],)
+                ).fetchone()
+                chk.close()
+                if cur is None or int(cur["pixel_version"]) != int(r["pv"]):
+                    return
+            except Exception:
+                pass
+            extra = (r["rov"] if r["rov"] >= 0 else r["crot"]) % 360
+            needs_t = int(r["orient"] or 1) not in (0, 1)
+            variants = [(1600, extra)] + ([(1600, 0)] if extra else [])
+            for w_, ex_ in variants:
+                cf = cache_dir / f"{tid}_{r['pid']}_{w_}_{ex_}_v{r['pv']}.jpg"
+                try:
+                    thumbs.get_or_make(
+                        cf,
+                        lambda s=src, w_=w_, ex_=ex_, nt=needs_t: thumbs.make_thumbnail(
+                            s, w_, needs_transpose=nt, extra_rotation=ex_
+                        ),
+                    )
+                except Exception:
+                    pass
+
+        with ThreadPoolExecutor(max_workers=min(workers, len(rows))) as ex:
+            list(ex.map(gen, rows))
+    except Exception:
+        pass
+
+
 def _needs_exif_transpose(path: Path) -> bool:
     try:
         with Image.open(path) as im:
             return int((im.getexif() or {}).get(274, 1)) not in (0, 1)
     except Exception:
         return False
-
-
-def _invalidate_cache(root: Path, tid: int, photo_id: int | None = None) -> None:
-    cache_dir = root / ".thumb_cache"
-    if not cache_dir.is_dir():
-        return
-    prefix = f"{tid}_"
-    for f in cache_dir.iterdir():
-        if (
-            f.is_file()
-            and f.name.startswith(prefix)
-            and (photo_id is None or f"_{photo_id}_" in f.name)
-        ):
-            f.unlink(missing_ok=True)
 
 
 class _Hub:
@@ -192,18 +316,22 @@ def create_app(workspace: Workspace) -> FastAPI:
     importer = TunnelImporter(workspace)
     hub = _Hub()
 
+    # R9：啟動還原——上次執行中的 job 已無對應執行緒，誠實標記為 interrupted
+    try:
+        workspace.job_interrupt_running()
+    except Exception:
+        pass
+
+    def _prune_jobs():
+        workspace.job_prune(_JOBS_TTL, _JOBS_MAX)
+        now = time.time()
+        expired = [k for k, v in _jobs.items() if now - v.get("created_at", now) > _JOBS_TTL]
+        for k in expired:
+            _jobs.pop(k, None)
+
     @app.get("/api/tunnels")
     def list_tunnels():
-        return [
-            {
-                "tunnel_id": t.tunnel_id,
-                "name": t.name,
-                "start_m": t.start_m,
-                "end_m": t.end_m,
-                "camera_count": t.camera_count,
-            }
-            for t in workspace.list_tunnels()
-        ]
+        return workspace.list_tunnels_full()
 
     def _to_req(body: ImportBody) -> ImportRequest:
         return ImportRequest(
@@ -246,7 +374,9 @@ def create_app(workspace: Workspace) -> FastAPI:
         except Exception as e:
             raise HTTPException(400, str(e))
         # 背景執行緒做 scan+align：POST 立即回 running，前端輪詢 GET 取進度；
-        # 掃描結果暫存於 job，commit 帶同一 job_id 時免二次 EXIF 掃描
+        # 掃描結果暫存於 runtime 並落地 index.db（scan_json），commit 帶同一
+        # job_id 且指紋一致時免二次 EXIF 掃描——跨 server 重啟亦然（R9）
+        fp = _scan_fingerprint(body)
         _jobs[job_id] = {
             "job_id": job_id,
             "status": "running",
@@ -254,10 +384,14 @@ def create_app(workspace: Workspace) -> FastAPI:
             "total": total,
             "done": 0,
             "req": req,
-            "scan_fp": _scan_fingerprint(body),
+            "scan_fp": fp,
             "created_at": time.time(),
             "enum_info": enum_info,
         }
+        try:
+            workspace.job_save(job_id, status="running", stage="scan", total=total, fingerprint=fp)
+        except Exception:
+            pass
 
         def _progress(n: int):
             job = _jobs.get(job_id)
@@ -273,6 +407,8 @@ def create_app(workspace: Workspace) -> FastAPI:
             try:
                 scanned_photos = importer.scan(req, progress=_progress)
                 preview = importer.preview(req, scanned=scanned_photos)
+                if job_id not in _jobs:
+                    return  # job 已被刪除：不得復活 runtime 或持久化列
                 _jobs[job_id] = {
                     **job,
                     "status": "done",
@@ -281,6 +417,19 @@ def create_app(workspace: Workspace) -> FastAPI:
                     "preview": asdict(preview),
                     "scan": scanned_photos,
                 }
+                try:
+                    workspace.job_save(
+                        job_id,
+                        status="done",
+                        stage="done",
+                        done=total,
+                        total=total,
+                        preview_json=asdict(preview),
+                        scan_json=_scan_to_json(scanned_photos),
+                        fingerprint=job.get("scan_fp"),
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 cur = _jobs.get(job_id)
                 if cur is not None:
@@ -290,6 +439,10 @@ def create_app(workspace: Workspace) -> FastAPI:
                         "error": str(e),
                         "created_at": cur.get("created_at", time.time()),
                     }
+                try:
+                    workspace.job_save(job_id, status="failed", error=str(e))
+                except Exception:
+                    pass
 
         th = threading.Thread(target=_run, name=f"import-job-{job_id}", daemon=True)
         _job_threads[job_id] = th
@@ -300,40 +453,101 @@ def create_app(workspace: Workspace) -> FastAPI:
     def get_import_job(job_id: str):
         _prune_jobs()
         job = _jobs.get(job_id)
-        if not job:
+        if job is not None:
+            payload = {
+                "job_id": job_id,
+                "status": job.get("status"),
+                "stage": job.get("stage"),
+                "done": job.get("done", 0),
+                "total": job.get("total", 0),
+                "preview": job.get("preview"),
+            }
+            if job.get("error"):
+                payload["error"] = job["error"]
+            return payload
+        row = workspace.job_get(job_id)
+        if not row:
             raise HTTPException(404, "任務不存在或已逾期")
-        return job
+        return {
+            "job_id": job_id,
+            "status": row["status"],
+            "stage": row.get("stage"),
+            "done": row.get("done", 0),
+            "total": row.get("total", 0),
+            "preview": row.get("preview"),
+            **({"error": row["error"]} if row.get("error") else {}),
+        }
 
     @app.delete("/api/import/jobs/{job_id}")
     def delete_import_job(job_id: str):
         _jobs.pop(job_id, None)
         _job_threads.pop(job_id, None)
+        try:
+            workspace.job_delete(job_id)
+        except Exception:
+            pass
         return {"ok": True}
 
     @app.post("/api/tunnels")
     def create_tunnel(body: ImportBody, job_id: str | None = None):
-        # job_id 快路徑：preview 時的掃描結果仍在暫存且機位資料夾指紋一致時直接復用，
+        # project 歸屬先驗證（隧道建立成功後歸檔）
+        if body.project_id is not None:
+            names = {p["id"] for p in workspace.list_projects()}
+            if body.project_id not in names:
+                raise HTTPException(404, "專案不存在")
+        # job_id 快路徑：掃描結果仍在暫存（或已落地 DB）且機位資料夾指紋一致時直接復用，
         # 免對（可能是慢速網路碟的）原始資料夾做第二次 EXIF 掃描
         scanned = None
         if job_id:
             th = _job_threads.get(job_id)
             if th is not None and th.is_alive():
                 th.join(timeout=600)  # 防禦：前端未等 done 就送 commit 時，等背景掃描完成
+            fp = _scan_fingerprint(body)
             job = _jobs.get(job_id)
             if (
                 job
                 and job.get("status") == "done"
                 and job.get("scan") is not None
-                and job.get("scan_fp") == _scan_fingerprint(body)
+                and job.get("scan_fp") == fp
             ):
                 scanned = job["scan"]
+            else:
+                # 重啟後 runtime 已失：從持久化的 scan_json 復用（R9）
+                row = workspace.job_get(job_id)
+                if (
+                    row
+                    and row.get("status") == "done"
+                    and row.get("scan")
+                    and row.get("fingerprint") == fp
+                ):
+                    try:
+                        scanned = _scan_from_json(row["scan"])
+                    except Exception:
+                        scanned = None
         info = importer.commit(_to_req(body), scanned=scanned)
         for cam in body.cameras:
             workspace.add_recent_path(cam.folder)
+        if body.project_id is not None:
+            try:
+                workspace.move_tunnel(info.tunnel_id, body.project_id)
+            except Exception:
+                pass  # 歸檔失敗不阻斷建立；可事後移動
+        # R9：背景預生成 1600px 縮圖（可用 TUNNELVIEW_THUMB_PREGEN=0 停用）
+        if os.environ.get("TUNNELVIEW_THUMB_PREGEN", "") != "0":
+            threading.Thread(
+                target=_pregen_thumbs,
+                args=(workspace, info.tunnel_id),
+                name=f"pregen-{info.tunnel_id}",
+                daemon=True,
+            ).start()
         # 清理對應 job
         if job_id:
             _jobs.pop(job_id, None)
             _job_threads.pop(job_id, None)
+            try:
+                workspace.job_delete(job_id)
+            except Exception:
+                pass
         return {"tunnel_id": info.tunnel_id}
 
     @app.get("/api/cache/scan")
@@ -343,11 +557,9 @@ def create_app(workspace: Workspace) -> FastAPI:
 
     @app.delete("/api/cache/scan")
     def clear_scan_cache(folder: str | None = None):
-        # 本期為記憶體 jobs 清理 + 可選刪除 data/.scan_cache.db（若存在）
+        # R9：掃描快取落地 index.db.scan_cache；此端點全清
         try:
-            cache_db = Path(workspace.root) / ".scan_cache.db"
-            if cache_db.exists():
-                cache_db.unlink()
+            workspace.scan_cache_clear()
         except Exception:
             pass
         return {"ok": True}
@@ -416,6 +628,50 @@ def create_app(workspace: Workspace) -> FastAPI:
             raise HTTPException(404, "類型不存在")
         return {"action": action}
 
+    # ---------- 專案歸檔（R9） ----------
+
+    @app.get("/api/projects")
+    def list_projects():
+        return workspace.list_projects()
+
+    @app.post("/api/projects")
+    def create_project(body: ProjectBody):
+        try:
+            return workspace.create_project(body.name)
+        except KeyError as e:
+            raise HTTPException(409, str(e.args[0]))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.put("/api/projects/{pid}")
+    def rename_project(pid: int, body: ProjectBody):
+        try:
+            workspace.rename_project(pid, body.name)
+        except KeyError as e:
+            # Workspace 對「不存在」與「名稱撞名」皆丟 KeyError
+            msg = str(e.args[0]) if e.args else ""
+            raise HTTPException(409 if "已存在" in msg else 404, msg or "專案不存在")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.delete("/api/projects/{pid}")
+    def delete_project(pid: int):
+        """刪除專案：底下隧道回到未分類（FK ON DELETE SET NULL），隧道不動。"""
+        try:
+            workspace.delete_project(pid)
+        except KeyError:
+            raise HTTPException(404, "專案不存在")
+        return {"ok": True}
+
+    @app.post("/api/tunnels/{tid}/move")
+    def move_tunnel(tid: int, body: MoveBody):
+        try:
+            workspace.move_tunnel(tid, body.project_id)
+        except KeyError:
+            raise HTTPException(404, "隧道或專案不存在")
+        return {"ok": True}
+
     # ---------- 照片標註（備註＋異狀） ----------
 
     @app.get("/api/tunnels/{tid}/photos/{pid}/annotation")
@@ -433,7 +689,7 @@ def create_app(workspace: Workspace) -> FastAPI:
             raise HTTPException(404, "照片不存在")
         except ValueError as e:
             raise HTTPException(400, str(e))
-        _invalidate_cache(workspace.root, tid)
+        # R9：備註/異狀存 DB 不改像素，不再失效縮圖快取
         hub.broadcast(
             tid,
             {
@@ -684,6 +940,11 @@ def create_app(workspace: Workspace) -> FastAPI:
 
     @app.get("/api/tunnels/{tid}/info")
     def tunnel_info(tid: int):
+        # R9：進入檢視器＝最近使用時間觸碰點
+        try:
+            workspace.touch_tunnel(tid)
+        except Exception:
+            pass
         return service.info(tid)
 
     @app.post("/api/tunnels/{tid}/photos/{pid}/mark_missing")
@@ -692,7 +953,7 @@ def create_app(workspace: Workspace) -> FastAPI:
             service.mark_missing_photo(tid, pid)
         except KeyError:
             raise HTTPException(404, "照片不存在")
-        _invalidate_cache(workspace.root, tid)
+        # R9：改判缺照不改變像素，不失效縮圖
         hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
         return {"ok": True}
 
@@ -712,7 +973,7 @@ def create_app(workspace: Workspace) -> FastAPI:
     @app.post("/api/tunnels/{tid}/realign/apply")
     async def realign_apply(tid: int, body: RealignBody):
         result = service.realign_apply(tid, body.tolerance_seconds)
-        _invalidate_cache(workspace.root, tid)
+        # R9：重新對齊只改群組歸屬，不改像素，不失效縮圖
         hub.broadcast(tid, {"type": "realigned"})
         return result
 
@@ -746,7 +1007,9 @@ def create_app(workspace: Workspace) -> FastAPI:
             raise HTTPException(404, "相機不存在")
         except ValueError as e:
             raise HTTPException(400, str(e))
-        _invalidate_cache(workspace.root, tid)
+        # R9 精準失效：僅旋轉改變像素 → 遞增該機位全部照片的 pixel_version 並清其縮圖
+        if body.rotation is not None:
+            _bump_pixels(service, workspace, tid, service.camera_photo_ids(tid, seq))
         hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
         return {"ok": True}
 
@@ -775,7 +1038,8 @@ def create_app(workspace: Workspace) -> FastAPI:
             service.set_photo_rotation(tid, pid, body.angle)
         except KeyError:
             raise HTTPException(404, "照片不存在")
-        _invalidate_cache(workspace.root, tid, photo_id=pid)
+        # R9 精準失效：單張像素版本遞增＋清該張縮圖
+        _bump_pixels(service, workspace, tid, [pid])
         hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
         return {"ok": True}
 
@@ -788,7 +1052,8 @@ def create_app(workspace: Workspace) -> FastAPI:
             updated = service.unify_camera_orientation(tid, seq, body.angle)
         except KeyError:
             raise HTTPException(404, "相機不存在")
-        _invalidate_cache(workspace.root, tid)
+        # R9 精準失效：批次轉正改變該機位像素 → 遞增版本並清縮圖
+        _bump_pixels(service, workspace, tid, service.camera_photo_ids(tid, seq))
         hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
         return {"ok": True, "updated": updated}
 
@@ -797,43 +1062,72 @@ def create_app(workspace: Workspace) -> FastAPI:
         return service.camera_thumbs(tid)
 
     @app.get("/api/tunnels/{tid}/photos/{photo_id}")
-    def photo(tid: int, photo_id: int, w: int | None = None):
+    def photo(tid: int, photo_id: int, w: int | None = None, pv: int | None = None, request: Request = None):
+        inm = _request_etags(request) if request is not None else set()
         try:
             info = service.photo_render_info(tid, photo_id)
         except KeyError:
             raise HTTPException(404, "照片不存在")
         path: Path = info["path"]
         extra: int = info["extra_rotation"]
+        # 快取檔版本取 URL 傳入的 pv（前端一律帶 groups API 給的當前值）；
+        # 未帶時退回 DB 當前值。bump 時會清除該照片所有版本的快取檔。
+        pv_val = pv if pv is not None else int(info.get("pixel_version") or 0)
         if not Path(path).exists():
             raise HTTPException(404, "照片檔案遺失（原檔可能被移動）")
 
-        needs_transpose = _needs_exif_transpose(path)
+        # R9：orientation 入庫——DB 為 NULL（舊隧道）時 lazy backfill 一次
+        orientation = info.get("orientation")
+        if orientation is None:
+            orientation = _read_orientation_tag(path)
+            try:
+                service.set_photo_orientation(tid, photo_id, orientation)
+            except Exception:
+                pass
+        needs_transpose = int(orientation) not in (0, 1)
+
         fast_path = w is None and extra == 0 and not needs_transpose
         if fast_path:
-            return FileResponse(path, media_type="image/jpeg")
+            # 原檔直出：非 immutable（原檔可能被外部取代），ETag 協商＋條件請求 304
+            etag = f'"{path.stat().st_mtime_ns:x}-{path.stat().st_size:x}"'
+            if inm and etag in inm:
+                return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "public, max-age=3600"})
+            return FileResponse(
+                path,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=3600", "ETag": etag},
+            )
 
         suffix = "orig" if w is None else str(w)
+        quality = thumbs.ORIG_QUALITY if w is None else thumbs.THUMB_QUALITY
         cache_dir = Path(workspace.root) / ".thumb_cache"
-        cache = cache_dir / f"{tid}_{photo_id}_{suffix}_{extra}.jpg"
-        if not cache.exists():
-            img = Image.open(path)
-            if needs_transpose:
-                img = ImageOps.exif_transpose(img)
-                img = img.convert("RGB")
-            else:
-                img.draft("RGB", (w * 2, w * 2)) if w else None
-                img = img.convert("RGB")
-            if extra:
-                img = img.rotate(-extra, expand=True)
-            if w is not None:
-                ratio = w / img.width
-                img = img.resize((w, max(1, round(img.height * ratio))), Image.BILINEAR)
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                img.save(cache, "JPEG", quality=87)
-            else:
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                img.save(cache, "JPEG", quality=92)
-        return FileResponse(cache, media_type="image/jpeg")
+        cache = cache_dir / f"{tid}_{photo_id}_{suffix}_{extra}_v{pv_val}.jpg"
+
+        def _produce():
+            return thumbs.make_thumbnail(
+                path,
+                w,
+                needs_transpose=needs_transpose,
+                extra_rotation=extra,
+                quality=quality,
+            )
+
+        try:
+            thumbs.get_or_make(cache, _produce)  # R9：single-flight，併發不重複解碼
+        except RuntimeError:
+            raise HTTPException(500, "縮圖生成失敗")
+        # 內容版本已編入 URL（pv）→ immutable 安全；仍附 ETag 供明確協商
+        thumb_etag = f'"{cache.stat().st_mtime_ns:x}-{cache.stat().st_size:x}"'
+        if inm and thumb_etag in inm:
+            return Response(status_code=304, headers={"ETag": thumb_etag, "Cache-Control": "public, max-age=31536000, immutable"})
+        return FileResponse(
+            cache,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": thumb_etag,
+            },
+        )
 
     @app.websocket("/ws/tunnels/{tid}")
     async def ws_room(websocket: WebSocket, tid: int):

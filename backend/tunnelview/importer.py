@@ -95,6 +95,7 @@ class _ScannedPhoto:
     flagged: bool
     width: int | None = None
     height: int | None = None
+    orientation: int = 1
 
 
 def _extract_dt_original(exif) -> datetime | None:
@@ -139,8 +140,8 @@ def read_display_dims(path: Path) -> tuple[int | None, int | None]:
         return None, None
 
 
-def read_exif_and_dims(path: Path) -> tuple[datetime | None, str, int | None, int | None]:
-    """單次開檔同時取 EXIF 時間與顯示尺寸（供併發管線使用）。"""
+def read_exif_and_dims(path: Path) -> tuple[datetime | None, str, int | None, int | None, int]:
+    """單次開檔同時取 EXIF 時間、顯示尺寸與 orientation（供併發管線使用）。"""
     try:
         with Image.open(path) as im:
             t = _extract_dt_original(im.getexif() or {})
@@ -149,9 +150,9 @@ def read_exif_and_dims(path: Path) -> tuple[datetime | None, str, int | None, in
             orientation = int((im.getexif() or {}).get(274, 1) or 1)
             if orientation in (5, 6, 7, 8):
                 w, h = h, w
-            return t, source, w, h
+            return t, source, w, h, orientation
     except Exception:
-        return None, "mtime", None, None
+        return None, "mtime", None, None, 1
 
 
 def _effective_rotation(cam_rot, photo_override) -> int:
@@ -280,24 +281,29 @@ class TunnelImporter:
             total_valid += valid_jpg
         return {"cameras": cameras, "total_valid": total_valid}
 
-    def _list_camera_files(self, folder: str) -> list[Path]:
-        """列舉單機位頂層 JPG（scandir，不開檔），依檔名排序保證決定性。"""
+    def _list_camera_files(self, folder: str) -> list[tuple[Path, int, float]]:
+        """列舉單機位頂層 JPG（scandir + entry.stat），依檔名排序保證決定性。
+
+        回傳 (路徑, size, mtime)：size/mtime 供掃描快取驗證——metadata 讀取
+        遠比開檔讀 EXIF 便宜（實測 NAS 上 EXIF 中位數 53ms/張）。
+        """
         d = Path(folder)
         if not d.is_dir():
             raise FileNotFoundError(f"相機資料夾不存在：{folder}")
-        entries: list[Path] = []
+        entries: list[tuple[Path, int, float]] = []
         with os.scandir(d) as it:
             for entry in it:
                 try:
                     if not entry.is_file():
                         continue
+                    p = Path(entry.path)
+                    if p.suffix.lower() not in IMAGE_EXTS:
+                        continue
+                    st = entry.stat()
                 except OSError:
                     continue
-                p = Path(entry.path)
-                if p.suffix.lower() not in IMAGE_EXTS:
-                    continue
-                entries.append(p)
-        entries.sort(key=lambda p: p.name.lower())
+                entries.append((p, st.st_size, st.st_mtime))
+        entries.sort(key=lambda e: e[0].name.lower())
         return entries
 
     def scan(
@@ -305,46 +311,100 @@ class TunnelImporter:
         req: ImportRequest,
         max_workers: int | None = None,
         progress=None,
+        use_cache: bool = True,
     ) -> list[_ScannedPhoto]:
         photos: list[_ScannedPhoto] = []
         # 併發解碼：單次開檔同時取 EXIF 與尺寸；IO-bound（網路碟延遲主導），
-        # ThreadPoolExecutor 即可大幅縮短；結果依 entries 順序收集，輸出與序列版完全一致
+        # ThreadPoolExecutor 即可大幅縮短；結果依 entries 順序收集，輸出與序列版完全一致。
+        # 掃描快取（R9）：(folder_root, rel_path) → size+mtime 驗證命中即免開檔；
+        # 未命中才讀檔並 UPSERT 回快取。跨隧道共用、原檔唯讀。
         if max_workers is None:
             max_workers = _default_scan_workers()
+        has_cache = use_cache and hasattr(self.ws, "scan_cache_load")
         for seq, cam in enumerate(req.cameras):
             entries = self._list_camera_files(cam.folder)
+            root_key = str(Path(cam.folder))
+            cached = self.ws.scan_cache_load(root_key) if has_cache else {}
             done = 0
 
-            def _read(p: Path) -> tuple:
+            def _tick():
                 nonlocal done
-                r = read_exif_and_dims(p)
                 done += 1
                 if progress is not None and done % 50 == 0:
                     try:
                         progress(done)
                     except Exception:
                         pass
-                return r
 
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                reads = list(ex.map(_read, entries))
+            results: list[_ScannedPhoto | None] = [None] * len(entries)
+            to_read: list[int] = []
+            cache_rows: list[tuple] = []
+            for i, (p, size, mtime) in enumerate(entries):
+                c = cached.get(p.name)
+                if c is not None and c["size"] == size and c["mtime"] == mtime:
+                    t = (
+                        datetime.fromisoformat(c["exif_time"])
+                        if c["exif_time"]
+                        else datetime.fromtimestamp(mtime)
+                    )
+                    source = c["time_source"]
+                    results[i] = _ScannedPhoto(
+                        seq,
+                        p,
+                        t,
+                        source,
+                        source == "mtime",
+                        width=c["width"],
+                        height=c["height"],
+                        orientation=c["orientation"] or 1,
+                    )
+                    _tick()
+                else:
+                    to_read.append(i)
+
+            def _read(i: int) -> tuple:
+                p, _, _ = entries[i]
+                r = read_exif_and_dims(p)
+                _tick()
+                return i, r
+
+            if to_read:
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    for i, (t, source, w, h, orientation) in ex.map(_read, to_read):
+                        p, size, mtime = entries[i]
+                        flagged = False
+                        if t is None:
+                            t = datetime.fromtimestamp(mtime)
+                            flagged = True
+                            source = "mtime"
+                        results[i] = _ScannedPhoto(
+                            seq, p, t, source, flagged, width=w, height=h, orientation=orientation
+                        )
+                        cache_rows.append(
+                            (
+                                p.name,
+                                size,
+                                mtime,
+                                t.isoformat(timespec="seconds") if not flagged else None,
+                                "mtime" if flagged else source,
+                                w,
+                                h,
+                                orientation,
+                            )
+                        )
+                if has_cache and cache_rows:
+                    try:
+                        self.ws.scan_cache_put(root_key, cache_rows)
+                    except Exception:
+                        pass  # 快取寫入失敗不影響掃描正確性
             if progress is not None and entries:
                 try:
                     progress(done)
                 except Exception:
                     pass
-            for p, (t, source, w, h) in zip(entries, reads):
-                flagged = False
-                if t is None:
-                    try:
-                        t = datetime.fromtimestamp(os.path.getmtime(p))
-                    except OSError:
-                        # 無法 stat 的檔案計為壞檔跳過
-                        continue
-                    flagged = True
-                    source = "mtime"
-                # 壞檔（無法解尺寸但有時間）仍保留，width/height 為 None 供後續 ignored 報告
-                photos.append(_ScannedPhoto(seq, p, t, source, flagged, width=w, height=h))
+            for sp in results:
+                if sp is not None:
+                    photos.append(sp)
         return photos
 
     def preview(self, req: ImportRequest, scanned: list[_ScannedPhoto] | None = None) -> ImportPreview:
@@ -454,13 +514,14 @@ class TunnelImporter:
                                 1 if (sp.flagged or residual_flagged) else 0,
                                 sp.width,
                                 sp.height,
+                                sp.orientation,
                             )
                         )
                     cam_updates.append((off, len(s.photos), s.camera_index))
                 for i in range(0, len(photo_rows), 1000):
                     conn.executemany(
-                        "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source, flagged, width, height) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source, flagged, width, height, orientation) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         photo_rows[i : i + 1000],
                     )
                 conn.executemany(

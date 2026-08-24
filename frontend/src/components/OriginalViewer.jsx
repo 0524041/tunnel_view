@@ -147,7 +147,10 @@ export default function OriginalViewer({ tunnelId, photos, startIndex, onClose, 
         >
           <img
             key={`${photo.photo_id}-${version}`}
-            src={`${api.photoUrl(tunnelId, photo.photo_id)}?cr=${photo.camera_rotation ?? 0}&pr=${angleOverride ?? photo.rotation_override ?? -1}&v=${version}`}
+            src={`${(() => {
+              const b = api.photoUrl(tunnelId, photo.photo_id)
+              return `${b}${b.includes('?') ? '&' : '?'}v=${version}`
+            })()}`}
             alt=""
             draggable={false}
             onError={(e) => {

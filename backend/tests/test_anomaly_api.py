@@ -307,7 +307,7 @@ class TestMigrationV5:
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()[0]
         conn.close()
-        assert version == SCHEMA_VERSION == "5"
+        assert version == SCHEMA_VERSION == "6"
         assert "note" in cols
         assert "photo_anomalies" in tables
 
@@ -335,7 +335,7 @@ class TestMigrationV5:
         cols = {x[1] for x in conn.execute("PRAGMA table_info(photos)")}
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
         conn.close()
-        assert version == "5"
+        assert version == "6"
         assert "note" in cols
 
         # 冪等：再次開啟不改變版本與資料

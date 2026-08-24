@@ -42,6 +42,26 @@ export default function WizardPage({ onDone, onCancel }) {
   const [unifyChoices, setUnifyChoices] = useState({}) // seq -> 90|270|skip
   const [error, setError] = useState('')
   const [displayOrder, setDisplayOrder] = useState(() => localStorage.getItem('tv_display_order') || 'asc')
+  // R9 專案歸檔：''＝未分類；'new' 觸發就地新增
+  const [projects, setProjects] = useState([])
+  const [projectId, setProjectId] = useState('')
+
+  useEffect(() => {
+    api.listProjects().then(setProjects).catch(() => setProjects([]))
+  }, [])
+
+  const ensureProject = async () => {
+    const name = window.prompt('新專案名稱：')
+    if (!name || !name.trim()) return ''
+    try {
+      const p = await api.createProject(name.trim())
+      setProjects((ps) => [...ps, p])
+      return p.id
+    } catch (e) {
+      setError(e.message)
+      return ''
+    }
+  }
 
   const startM = parseMileage(startText)
   const endM = parseMileage(endText)
@@ -103,6 +123,8 @@ export default function WizardPage({ onDone, onCancel }) {
               setProgress(null)
               setPreview(j.preview)
               resolve()
+            } else if (j.status === 'interrupted') {
+              reject(new Error('伺服器曾重啟，掃描中斷。請重新執行「執行對齊分析」。'))
             } else {
               reject(new Error(j.error || '分析失敗'))
             }
@@ -146,6 +168,7 @@ export default function WizardPage({ onDone, onCancel }) {
           tolerance_seconds: tolerance,
           layout_cols: layoutCols,
           cameras,
+          project_id: projectId === '' ? null : Number(projectId),
         },
         jobIdRef.current,
       )
@@ -220,6 +243,27 @@ export default function WizardPage({ onDone, onCancel }) {
               <span className="mono">23150</span>。行進方向由起迄決定：
               <b className="mono" style={{ color: 'var(--amber)' }}> {dirLabel || '—'}</b>
             </p>
+
+            <label className="label" style={{ marginTop: 12 }}>所屬專案（可之後再歸檔）</label>
+            <select
+              className="field"
+              value={projectId}
+              onChange={async (e) => {
+                const v = e.target.value
+                if (v === 'new') {
+                  const id = await ensureProject()
+                  setProjectId(id)
+                } else {
+                  setProjectId(v)
+                }
+              }}
+            >
+              <option value="">未分類</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+              <option value="new">＋ 新增專案…</option>
+            </select>
 
             <div className="wiz-actions">
               <button type="button" className="btn" onClick={onCancel}>取消</button>

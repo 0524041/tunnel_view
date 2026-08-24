@@ -128,52 +128,71 @@ class TunnelService:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             anchored = set(self._resolved_anchors(conn))
-            groups = conn.execute(
-                "SELECT id, seq, corrected_time, est_mileage_m, missing_count "
-                "FROM photo_groups WHERE seq BETWEEN ? AND ? ORDER BY seq",
+            # 單一 JOIN 取回視窗內群組＋照片（R9：取代每群一查的 N+1）
+            rows = conn.execute(
+                "SELECT g.id AS gid, g.seq AS gseq, g.corrected_time AS gtime, "
+                "g.est_mileage_m AS gest, g.missing_count AS gmissing, "
+                "p.id AS photo_id, c.seq AS camera_seq, p.rel_path, p.flagged, "
+                "p.width, p.height, p.rotation_override AS rotation_override, "
+                "c.rotation AS camera_rotation, p.exif_time, p.corrected_time, "
+                "p.time_source, p.aspect_anomaly, "
+                "(p.width IS NOT NULL AND p.height IS NOT NULL) AS has_dims, "
+                "COALESCE(p.pixel_version, 0) AS pixel_version "
+                "FROM photo_groups g "
+                "LEFT JOIN photos p ON p.group_id = g.id AND COALESCE(p.manual_missing, 0) = 0 "
+                "LEFT JOIN cameras c ON c.id = p.camera_id "
+                "WHERE g.seq BETWEEN ? AND ? ORDER BY g.seq, c.seq",
                 (lo, hi),
             ).fetchall()
             type_names = self._type_names()
-            result = []
-            for g in groups:
-                photos = conn.execute(
-                    "SELECT p.id AS photo_id, c.seq AS camera_seq, p.rel_path, p.flagged, "
-                    "p.width, p.height, p.rotation_override AS rotation_override, c.rotation AS camera_rotation, "
-                    "p.exif_time, p.corrected_time, p.time_source, p.aspect_anomaly, "
-                    "(p.width IS NOT NULL AND p.height IS NOT NULL) AS has_dims "
-                    "FROM photos p JOIN cameras c ON c.id = p.camera_id "
-                    "WHERE p.group_id = ? AND COALESCE(p.manual_missing, 0) = 0 ORDER BY c.seq",
-                    (g["id"],),
-                ).fetchall()
-                photo_dicts = [dict(p) for p in photos]
-                if photo_dicts:
-                    pids = [p["photo_id"] for p in photo_dicts]
-                    qmarks = ",".join("?" * len(pids))
-                    try:
-                        rows = conn.execute(
-                            f"SELECT photo_id, type_id FROM photo_anomalies WHERE photo_id IN ({qmarks})",
-                            pids,
-                        ).fetchall()
-                    except Exception:
-                        rows = []
-                    amap: dict[int, list[str]] = {}
-                    for r in rows:
-                        amap.setdefault(r["photo_id"], []).append(type_names.get(r["type_id"], "（未知）"))
-                    for p in photo_dicts:
-                        p["anomaly_types"] = amap.get(p["photo_id"], [])
-                else:
-                    for p in photo_dicts:
-                        p["anomaly_types"] = []
-                result.append(
-                    {
-                        "seq": g["seq"],
-                        "corrected_time": g["corrected_time"],
-                        "est_mileage_m": g["est_mileage_m"],
-                        "missing_count": g["missing_count"],
-                        "anchored": g["seq"] in anchored,
-                        "photos": photo_dicts,
+            pids = [r["photo_id"] for r in rows if r["photo_id"] is not None]
+            amap: dict[int, list[str]] = {}
+            if pids:
+                qmarks = ",".join("?" * len(pids))
+                try:
+                    arows = conn.execute(
+                        f"SELECT photo_id, type_id FROM photo_anomalies WHERE photo_id IN ({qmarks})",
+                        pids,
+                    ).fetchall()
+                    for r in arows:
+                        amap.setdefault(r["photo_id"], []).append(
+                            type_names.get(r["type_id"], "（未知）")
+                        )
+                except Exception:
+                    pass
+            result: list[dict] = []
+            current: dict | None = None
+            for r in rows:
+                if current is None or r["gseq"] != current["seq"]:
+                    current = {
+                        "seq": r["gseq"],
+                        "corrected_time": r["gtime"],
+                        "est_mileage_m": r["gest"],
+                        "missing_count": r["gmissing"],
+                        "anchored": r["gseq"] in anchored,
+                        "photos": [],
                     }
-                )
+                    result.append(current)
+                if r["photo_id"] is not None:
+                    current["photos"].append(
+                        {
+                            "photo_id": r["photo_id"],
+                            "camera_seq": r["camera_seq"],
+                            "rel_path": r["rel_path"],
+                            "flagged": r["flagged"],
+                            "width": r["width"],
+                            "height": r["height"],
+                            "rotation_override": r["rotation_override"],
+                            "camera_rotation": r["camera_rotation"],
+                            "exif_time": r["exif_time"],
+                            "corrected_time": r["corrected_time"],
+                            "time_source": r["time_source"],
+                            "aspect_anomaly": r["aspect_anomaly"],
+                            "has_dims": bool(r["has_dims"]),
+                            "pixel_version": r["pixel_version"],
+                            "anomaly_types": amap.get(r["photo_id"], []),
+                        }
+                    )
             return result
         finally:
             conn.close()
@@ -244,10 +263,13 @@ class TunnelService:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             rows = conn.execute(
-                "SELECT c.seq AS camera_seq, MIN(p.id) AS photo_id "
+                "SELECT c.seq AS camera_seq, p.id AS photo_id, "
+                "COALESCE(p.pixel_version, 0) AS pixel_version "
                 "FROM photos p JOIN cameras c ON c.id = p.camera_id "
-                "WHERE COALESCE(p.manual_missing, 0) = 0 "
-                "GROUP BY c.seq ORDER BY c.seq"
+                "JOIN (SELECT camera_id, MIN(id) AS min_id FROM photos "
+                "      WHERE COALESCE(manual_missing, 0) = 0 GROUP BY camera_id) m "
+                "ON m.camera_id = p.camera_id AND m.min_id = p.id "
+                "ORDER BY c.seq"
             ).fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -258,11 +280,12 @@ class TunnelService:
         return self.photo_render_info(tunnel_id, photo_id)["path"]
 
     def photo_render_info(self, tunnel_id: int, photo_id: int) -> dict:
-        """照片串流資訊：絕對路徑＋額外旋轉角（單張 override > 機位預設）。"""
+        """照片串流資訊：絕對路徑＋額外旋轉角＋orientation＋像素版本。"""
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             row = conn.execute(
-                "SELECT c.root_path, p.rel_path, p.rotation_override AS ro, c.rotation AS cam_rot "
+                "SELECT c.root_path, p.rel_path, p.rotation_override AS ro, c.rotation AS cam_rot, "
+                "p.orientation AS orientation, COALESCE(p.pixel_version, 0) AS pixel_version "
                 "FROM photos p JOIN cameras c ON c.id = p.camera_id WHERE p.id = ?",
                 (photo_id,),
             ).fetchone()
@@ -274,7 +297,49 @@ class TunnelService:
         return {
             "path": Path(row["root_path"]) / row["rel_path"],
             "extra_rotation": int(extra or 0) % 360,
+            "orientation": row["orientation"],
+            "pixel_version": int(row["pixel_version"]),
         }
+
+    # ---------- 像素版本（R9：immutable 縮圖快取失效） ----------
+
+    def bump_pixel_versions(self, tunnel_id: int, photo_ids: list[int]) -> None:
+        """僅真正改變像素的操作呼叫（相機旋轉/unify/單張轉正）。"""
+        if not photo_ids:
+            return
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                conn.executemany(
+                    "UPDATE photos SET pixel_version = pixel_version + 1 WHERE id = ?",
+                    [(pid,) for pid in photo_ids],
+                )
+        finally:
+            conn.close()
+
+    def camera_photo_ids(self, tunnel_id: int, camera_seq: int) -> list[int]:
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            rows = conn.execute(
+                "SELECT p.id FROM photos p JOIN cameras c ON c.id = p.camera_id "
+                "WHERE c.seq = ? ORDER BY p.id",
+                (camera_seq,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r["id"] for r in rows]
+
+    def set_photo_orientation(self, tunnel_id: int, photo_id: int, orientation: int) -> None:
+        """lazy backfill 既有隧道的 EXIF orientation（首次 serve 時）。"""
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE photos SET orientation = ? WHERE id = ? AND orientation IS NULL",
+                    (int(orientation), photo_id),
+                )
+        finally:
+            conn.close()
 
     @staticmethod
     def _recompute(conn, *, group_count: int, start_m: int, end_m: int, anchors: dict[int, int]) -> None:
@@ -380,6 +445,7 @@ class TunnelService:
         sql = (
             "SELECT pa.id AS anomaly_id, pa.photo_id, pa.note AS anomaly_note, pa.created_at, "
             "pa.type_id, p.rel_path, c.root_path, p.note AS photo_note, c.name AS camera_name, "
+            "COALESCE(p.pixel_version, 0) AS pixel_version, "
             "g.seq AS group_seq, g.est_mileage_m "
             "FROM photo_anomalies pa "
             "JOIN photos p ON p.id = pa.photo_id "

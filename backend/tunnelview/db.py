@@ -22,13 +22,15 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 # 全工作區共用的異狀類型（跨隧道專案）
 BUILTIN_DEFECT_TYPES = ("裂縫", "滲漏水", "剝落", "白華", "鋼筋外露")
@@ -74,7 +76,9 @@ CREATE TABLE IF NOT EXISTS photos (
     rotation_override INTEGER CHECK (rotation_override IN (0, 90, 180, 270)),
     review_result TEXT CHECK (review_result IN ('ok', 'anomaly')),
     aspect_anomaly INTEGER NOT NULL DEFAULT 0,
-    note TEXT
+    note TEXT,
+    orientation INTEGER,
+    pixel_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_photos_group ON photos(group_id);
 CREATE INDEX IF NOT EXISTS idx_photos_camera ON photos(camera_id);
@@ -178,6 +182,15 @@ def migrate_if_needed(conn: sqlite3.Connection) -> None:
             photo_cols2 = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
             if "note" not in photo_cols2:
                 conn.execute("ALTER TABLE photos ADD COLUMN note TEXT")
+            # v6：EXIF orientation 入庫（NULL=未知，首次 serve 時 lazy backfill）
+            # 與像素版本（僅真正改變像素的操作遞增，供 immutable 縮圖快取失效）
+            photo_cols3 = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+            if "orientation" not in photo_cols3:
+                conn.execute("ALTER TABLE photos ADD COLUMN orientation INTEGER")
+            if "pixel_version" not in photo_cols3:
+                conn.execute(
+                    "ALTER TABLE photos ADD COLUMN pixel_version INTEGER NOT NULL DEFAULT 0"
+                )
             conn.execute(_ANOMALIES_DDL)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_anomalies_photo ON photo_anomalies(photo_id)"
@@ -272,7 +285,58 @@ class Workspace:
             """
         )
             conn.execute("PRAGMA journal_mode=WAL")
+            self._ensure_home_tables(conn)
             self._ensure_defect_types(conn)
+
+    @staticmethod
+    def _ensure_home_tables(conn: sqlite3.Connection) -> None:
+        """R9：專案歸檔、EXIF 掃描快取、匯入 job 持久化（冪等，既有/新工作區皆適用）。"""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS projects ("
+            "id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        tunnel_cols = {r[1] for r in conn.execute("PRAGMA table_info(tunnels)")}
+        if "project_id" not in tunnel_cols:
+            # 刪除專案時隧道回未分類（ON DELETE SET NULL 需預設 NULL）
+            conn.execute(
+                "ALTER TABLE tunnels ADD COLUMN project_id INTEGER "
+                "REFERENCES projects(id) ON DELETE SET NULL"
+            )
+        if "last_opened_at" not in tunnel_cols:
+            conn.execute("ALTER TABLE tunnels ADD COLUMN last_opened_at TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scan_cache (
+                folder_root TEXT NOT NULL,
+                rel_path TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mtime REAL NOT NULL,
+                exif_time TEXT,
+                time_source TEXT NOT NULL,
+                width INTEGER,
+                height INTEGER,
+                orientation INTEGER,
+                PRIMARY KEY (folder_root, rel_path)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS import_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                stage TEXT,
+                done INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                preview_json TEXT,
+                scan_json TEXT,
+                error TEXT,
+                fingerprint TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
 
     @staticmethod
     def _ensure_defect_types(conn: sqlite3.Connection) -> None:
@@ -360,6 +424,34 @@ class Workspace:
                 "SELECT id, name, db_filename, start_m, end_m, camera_count FROM tunnels ORDER BY id"
             ).fetchall()
         return [TunnelInfo(*r) for r in rows]
+
+    def list_tunnels_full(self) -> list[dict]:
+        """首頁用完整欄位：含專案歸屬與最近開啟時間（R9）。"""
+        if not self.index_path.exists():
+            return []
+        with self._connect(self.index_path) as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT t.id AS tunnel_id, t.name, t.start_m, t.end_m, t.camera_count,
+                           t.project_id AS project_id, p.name AS project_name,
+                           t.last_opened_at AS last_opened_at,
+                           t.created_at AS created_at
+                    FROM tunnels t LEFT JOIN projects p ON p.id = t.project_id
+                    ORDER BY t.id
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return [
+                    {
+                        "tunnel_id": t.tunnel_id, "name": t.name,
+                        "start_m": t.start_m, "end_m": t.end_m,
+                        "camera_count": t.camera_count, "project_id": None,
+                        "project_name": None, "last_opened_at": None, "created_at": None,
+                    }
+                    for t in self.list_tunnels()
+                ]
+        return [dict(r) for r in rows]
 
     def create_tunnel(
         self,
@@ -478,3 +570,226 @@ class Workspace:
         if row is None:
             raise KeyError(tunnel_id)
         return row
+
+    # ---------- 專案歸檔（R9） ----------
+
+    def list_projects(self) -> list[dict]:
+        if not self.index_path.exists():
+            return []
+        with self._connect(self.index_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT p.id, p.name, p.created_at, COUNT(t.id) AS tunnel_count
+                FROM projects p LEFT JOIN tunnels t ON t.project_id = p.id
+                GROUP BY p.id
+                ORDER BY p.name COLLATE NOCASE, p.id
+                """
+            ).fetchall()
+        return [
+            {"id": r["id"], "name": r["name"], "tunnel_count": r["tunnel_count"]}
+            for r in rows
+        ]
+
+    def create_project(self, name: str) -> dict:
+        name = name.strip()
+        if not name:
+            raise ValueError("專案名稱不可空白")
+        with self._lock, self._connect(self.index_path) as conn:
+            self._ensure_home_tables(conn)
+            try:
+                cur = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+            except sqlite3.IntegrityError:
+                raise KeyError(f"專案已存在：{name}")
+            pid = cur.lastrowid
+        return {"id": pid, "name": name, "tunnel_count": 0}
+
+    def rename_project(self, project_id: int, name: str) -> None:
+        name = name.strip()
+        if not name:
+            raise ValueError("專案名稱不可空白")
+        with self._lock, self._connect(self.index_path) as conn:
+            if conn.execute(
+                "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+            ).fetchone() is None:
+                raise KeyError(project_id)
+            try:
+                conn.execute(
+                    "UPDATE projects SET name = ? WHERE id = ?", (name, project_id)
+                )
+            except sqlite3.IntegrityError:
+                raise KeyError(f"專案已存在：{name}")
+
+    def delete_project(self, project_id: int) -> None:
+        """刪除專案：底下隧道回到未分類（FK ON DELETE SET NULL），隧道本身不受影響。"""
+        with self._lock, self._connect(self.index_path) as conn:
+            cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            if cur.rowcount == 0:
+                raise KeyError(project_id)
+
+    def move_tunnel(self, tunnel_id: int, project_id: int | None) -> None:
+        """把隧道移入專案（None＝移回未分類）。"""
+        self._tunnel_row(tunnel_id)  # 不存在時 KeyError
+        if project_id is not None:
+            with self._connect(self.index_path) as conn:
+                if conn.execute(
+                    "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+                ).fetchone() is None:
+                    raise KeyError(project_id)
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute(
+                "UPDATE tunnels SET project_id = ? WHERE id = ?", (project_id, tunnel_id)
+            )
+
+    def get_tunnel_project(self, tunnel_id: int) -> int | None:
+        row = self._tunnel_row(tunnel_id)
+        return row["project_id"] if "project_id" in row.keys() else None
+
+    def touch_tunnel(self, tunnel_id: int) -> None:
+        """記錄進入檢視器的時間。last_opened_at 存 TEXT（毫秒精度時間戳，
+        同 recent_paths 慣例——字串比較即可保序）。"""
+        with self._lock, self._connect(self.index_path) as conn:
+            now_ms = conn.execute(
+                "SELECT strftime('%Y-%m-%d %H:%M:%f', 'now')"
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE tunnels SET last_opened_at = ? WHERE id = ?",
+                (now_ms, tunnel_id),
+            )
+
+    def get_last_opened(self, tunnel_id: int) -> str | None:
+        row = self._tunnel_row(tunnel_id)
+        keys = row.keys()
+        return row["last_opened_at"] if "last_opened_at" in keys else None
+
+    # ---------- EXIF 掃描快取（R9，index.db 全域共用） ----------
+
+    def scan_cache_load(self, folder_root: str) -> dict[str, dict]:
+        if not self.index_path.exists():
+            return {}
+        with self._connect(self.index_path) as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT rel_path, size, mtime, exif_time, time_source, "
+                    "width, height, orientation FROM scan_cache WHERE folder_root = ?",
+                    (folder_root,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        return {
+            r["rel_path"]: {
+                "size": r["size"],
+                "mtime": r["mtime"],
+                "exif_time": r["exif_time"],
+                "time_source": r["time_source"],
+                "width": r["width"],
+                "height": r["height"],
+                "orientation": r["orientation"],
+            }
+            for r in rows
+        }
+
+    def scan_cache_put(self, folder_root: str, rows: list[tuple]) -> None:
+        """rows: (rel_path, size, mtime, exif_time_iso|None, time_source, width, height, orientation)"""
+        if not rows:
+            return
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO scan_cache (folder_root, rel_path, size, mtime, exif_time,
+                                        time_source, width, height, orientation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(folder_root, rel_path) DO UPDATE SET
+                    size=excluded.size, mtime=excluded.mtime, exif_time=excluded.exif_time,
+                    time_source=excluded.time_source, width=excluded.width,
+                    height=excluded.height, orientation=excluded.orientation
+                """,
+                [(folder_root, *r) for r in rows],
+            )
+
+    def scan_cache_clear(self) -> None:
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute("DELETE FROM scan_cache")
+
+    # ---------- 匯入 job 持久化（R9） ----------
+
+    def job_save(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        stage: str | None = None,
+        done: int = 0,
+        total: int = 0,
+        preview_json=None,
+        scan_json=None,
+        error: str | None = None,
+        fingerprint: str | None = None,
+    ) -> None:
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO import_jobs (job_id, status, stage, done, total, preview_json,
+                                         scan_json, error, fingerprint, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status=excluded.status, stage=excluded.stage, done=excluded.done,
+                    total=excluded.total,
+                    preview_json=COALESCE(excluded.preview_json, import_jobs.preview_json),
+                    scan_json=COALESCE(excluded.scan_json, import_jobs.scan_json),
+                    error=excluded.error, fingerprint=excluded.fingerprint
+                """,
+                (
+                    job_id,
+                    status,
+                    stage,
+                    done,
+                    total,
+                    json.dumps(preview_json, ensure_ascii=False) if preview_json is not None else None,
+                    json.dumps(scan_json, ensure_ascii=False) if scan_json is not None else None,
+                    error,
+                    fingerprint,
+                    datetime.now().timestamp(),
+                ),
+            )
+
+    def job_get(self, job_id: str) -> dict | None:
+        if not self.index_path.exists():
+            return None
+        with self._connect(self.index_path) as conn:
+            try:
+                row = conn.execute(
+                    "SELECT * FROM import_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        d = dict(row)
+        d["preview"] = json.loads(d.pop("preview_json")) if d.get("preview_json") else None
+        d["scan"] = json.loads(d.pop("scan_json")) if d.get("scan_json") else None
+        d.pop("preview_json", None)
+        d.pop("scan_json", None)
+        return d
+
+    def job_delete(self, job_id: str) -> None:
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute("DELETE FROM import_jobs WHERE job_id = ?", (job_id,))
+
+    def job_interrupt_running(self) -> None:
+        """server 啟動還原：上次執行中的 job 已無執行緒，標記為 interrupted。"""
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute("UPDATE import_jobs SET status = 'interrupted' WHERE status = 'running'")
+
+    def job_prune(self, ttl_sec: float, max_n: int) -> None:
+        cutoff = datetime.now().timestamp() - ttl_sec
+        with self._lock, self._connect(self.index_path) as conn:
+            conn.execute("DELETE FROM import_jobs WHERE created_at < ?", (cutoff,))
+            conn.execute(
+                "DELETE FROM import_jobs WHERE job_id IN ("
+                "SELECT job_id FROM import_jobs ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
+                (max_n,),
+            )
+
+    def job_count(self) -> int:
+        with self._connect(self.index_path) as conn:
+            return conn.execute("SELECT COUNT(*) AS n FROM import_jobs").fetchone()["n"]

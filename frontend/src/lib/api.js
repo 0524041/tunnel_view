@@ -128,11 +128,47 @@ export const api = {
     let u = `/api/tunnels/${tid}/photos/${photoId}`
     const qs = []
     if (w) qs.push(`w=${w}`)
-    if (photo) {
-      qs.push(`cr=${photo.camera_rotation ?? 0}`)
-      qs.push(`pr=${photo.rotation_override ?? -1}`)
-    }
+    // R9：像素版本入 URL → 後端回 immutable 快取標頭；旋轉等操作遞增版本自然失效
+    if (photo?.pixel_version != null) qs.push(`pv=${photo.pixel_version}`)
     return u + (qs.length ? `?${qs.join('&')}` : '')
+  },
+
+  listProjects: () => fetch('/api/projects').then(handle),
+
+  createProject: async (name) => {
+    const r = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    return handle(r)
+  },
+
+  // 專案管理端點沿用本檔既有的簡潔錯誤風格（見 deleteTunnel/markMissing）
+  renameProject: async (id, name) => {
+    const r = await fetch(`/api/projects/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}))
+      throw new Error(body.detail != null ? _formatDetail(body.detail) : `HTTP ${r.status}`)
+    }
+  },
+
+  deleteProject: async (id) => {
+    const r = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  },
+
+  moveTunnel: async (tid, projectId) => {
+    const r = await fetch(`/api/tunnels/${tid}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
   },
 
   cameraThumbs: (tid) => fetch(`/api/tunnels/${tid}/camera_thumbs`).then(handle),

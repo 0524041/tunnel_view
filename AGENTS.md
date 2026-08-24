@@ -24,7 +24,7 @@ Env: `TUNNELVIEW_HOME` (default `./data`), `TUNNELVIEW_PORT` (default `8000`).
 
 ## Test
 ```bash
-uv run pytest backend/tests/ -q              # 132 tests (pytest pythonpath=backend)
+uv run pytest backend/tests/ -q              # 215 tests (pytest pythonpath=backend)
 uv run python e2e_check.py ./八卦山西行      # e2e (requires: uv run playwright install chromium)
 
 # lint

@@ -74,7 +74,7 @@ def bench_scan(paths: list[Path]) -> tuple[float, int]:
     t0 = time.perf_counter()
     ok = 0
     for i, p in enumerate(paths, 1):
-        t, source, w, h = read_exif_and_dims(p)
+        t, source, w, h, _orientation = read_exif_and_dims(p)
         if t is not None or w is not None:
             ok += 1
         if i % 200 == 0:
@@ -157,11 +157,13 @@ def main() -> int:
     for seq, (cam, paths) in enumerate(zip(req.cameras, all_paths)):
         stamps = []
         for p in paths:
-            t, source, w, h = read_exif_and_dims(p)
+            t, source, w, h, orientation = read_exif_and_dims(p)
             if t is None:
                 t = datetime.fromtimestamp(p.stat().st_mtime)
                 source = "mtime"
-            photos.append(_ScannedPhoto(seq, p, t, source, source == "mtime", w, h))
+            photos.append(
+                _ScannedPhoto(seq, p, t, source, source == "mtime", w, h, orientation)
+            )
             stamps.append(PhotoStamp(photo_id=f"{seq}:{p.name}", t=t))
         if stamps:
             by_cam[seq] = stamps
