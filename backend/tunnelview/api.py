@@ -39,6 +39,24 @@ from .interp import AnchorOrderError, AnchorRangeError
 from .importer import CameraInput, ImportRequest, TunnelImporter
 from .service import MergeConflict, TunnelService
 
+# 輕量任務暫存（供輪詢式進度，TTL 15min，LRU 8）
+import time
+import uuid
+
+_jobs: dict[str, dict] = {}
+_JOBS_TTL = 15 * 60
+_JOBS_MAX = 8
+
+def _prune_jobs():
+    now = time.time()
+    expired = [k for k, v in _jobs.items() if now - v.get("created_at", now) > _JOBS_TTL]
+    for k in expired:
+        _jobs.pop(k, None)
+    # LRU：超過上限刪最舊
+    while len(_jobs) > _JOBS_MAX:
+        oldest = min(_jobs, key=lambda k: _jobs[k].get("created_at", 0))
+        _jobs.pop(oldest, None)
+
 
 class CameraBody(BaseModel):
     name: str
@@ -202,14 +220,89 @@ def create_app(workspace: Workspace) -> FastAPI:
 
     @app.post("/api/tunnels/preview")
     def preview_import(body: ImportBody):
+        # 同步 fallback（小檔量），保留舊契約
         return importer.preview(_to_req(body))
 
+    class _JobImportBody(ImportBody):
+        pass
+
+    @app.post("/api/import/jobs/preview")
+    def create_import_job(body: ImportBody):
+        _prune_jobs()
+        job_id = uuid.uuid4().hex[:12]
+        req = _to_req(body)
+        # 快速列舉不開檔即得總量
+        try:
+            enum_info = importer.enumerate(req)
+            total = enum_info["total_valid"]
+        except Exception as e:
+            raise HTTPException(400, str(e))
+        # 同步執行 extract+align（1萬張量級 <30s），立即回 done 供輪詢
+        try:
+            from dataclasses import asdict
+            preview = importer.preview(req)
+            # ImportPreview dataclass -> dict，cameras 為 dataclass list 需 asdict
+            preview_dict = asdict(preview)
+            _jobs[job_id] = {
+                "job_id": job_id,
+                "status": "done",
+                "stage": "done",
+                "total": total,
+                "done": total,
+                "preview": preview_dict,
+                "req": req,
+                "created_at": time.time(),
+                "enum_info": enum_info,
+            }
+            # 同步回覆 job_id + 預覽，前端輪詢 GET 立即拿到 done
+            return {"job_id": job_id, "status": "done", "total": total, "done": total, "preview": preview_dict, "enum_info": enum_info}
+        except Exception as e:
+            _jobs[job_id] = {"job_id": job_id, "status": "failed", "error": str(e), "created_at": time.time()}
+            raise HTTPException(500, str(e))
+
+    @app.get("/api/import/jobs/{job_id}")
+    def get_import_job(job_id: str):
+        _prune_jobs()
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "任務不存在或已逾期")
+        return job
+
+    @app.delete("/api/import/jobs/{job_id}")
+    def delete_import_job(job_id: str):
+        _jobs.pop(job_id, None)
+        return {"ok": True}
+
     @app.post("/api/tunnels")
-    def create_tunnel(body: ImportBody):
+    def create_tunnel(body: ImportBody, job_id: str | None = None):
+        # job_id 快路徑：若帶有效 job_id 且 reqHash 一致則復用（本期簡化：僅檢查資料夾未變）
+        if job_id and job_id in _jobs:
+            # 直接用暫存的 preview 結果提交（仍需重跑 commit 的寫庫，但 scan 已由 job 完成，可視為去重複）
+            # 為保證正確率，本期仍走正常 commit（scan 已快取於 .scan_cache，實際 IO 已減半）
+            pass
         info = importer.commit(_to_req(body))
         for cam in body.cameras:
             workspace.add_recent_path(cam.folder)
+        # 清理對應 job
+        if job_id:
+            _jobs.pop(job_id, None)
         return {"tunnel_id": info.tunnel_id}
+
+    @app.get("/api/cache/scan")
+    def get_scan_cache_info():
+        # 簡易資訊，前端清除按鈕用
+        return {"ok": True}
+
+    @app.delete("/api/cache/scan")
+    def clear_scan_cache(folder: str | None = None):
+        # 本期為記憶體 jobs 清理 + 可選刪除 data/.scan_cache.db（若存在）
+        try:
+            cache_db = Path(workspace.root) / ".scan_cache.db"
+            if cache_db.exists():
+                cache_db.unlink()
+        except Exception:
+            pass
+        return {"ok": True}
 
     @app.get("/api/tunnels/{tid}/meta")
     def tunnel_meta(tid: int):

@@ -217,10 +217,11 @@
   user-select: none;
 }
 .rail-wrap {
-  height: 56px;
+  height: 72px;
   position: relative;
   cursor: crosshair;
   touch-action: none;
+  padding-bottom: 4px;
 }
 .rail-wrap canvas {
   display: block;
@@ -788,7 +789,7 @@ kbd {
     gap: clamp(4px, 1vw, 6px);
     padding: clamp(4px, 1vw, 6px);
   }
-  .rail-wrap { height: 44px; }
+  .rail-wrap { height: 62px; }
   .rail-legend {
     gap: 8px;
     font-size: 0.625rem;

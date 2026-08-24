@@ -546,17 +546,29 @@ class TunnelService:
                     anchors=existing,
                 )
 
-                payload = self._preview_payload(series, result)
-                payload.update(
+                # 保留既有報告欄位（imported_at/rotation等），僅覆寫可變欄
+                existing_raw = conn.execute("SELECT value FROM meta WHERE key='import_report'").fetchone()
+                existing_report = json.loads(existing_raw["value"]) if existing_raw else {}
+                new_payload = self._preview_payload(series, result)
+                new_payload.update(
                     {
                         "tolerance_seconds": tolerance_seconds,
                         "realigned_at": datetime.now().isoformat(timespec="seconds"),
                     }
                 )
+                # 合併：保留 imported_at 與既有 cameras 的 rotation/layout 等
+                merged = dict(existing_report)
+                merged.update(new_payload)
+                # 明確保留首次匯入時間
+                if "imported_at" in existing_report:
+                    merged["imported_at"] = existing_report["imported_at"]
+                # 若既有 report 有 layout_cols，保留（realign 不改版型）
+                if "layout_cols" in existing_report and "layout_cols" not in new_payload:
+                    merged["layout_cols"] = existing_report["layout_cols"]
                 conn.execute(
                     "INSERT INTO meta (key, value) VALUES ('import_report', ?) "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (json.dumps(payload, ensure_ascii=False),),
+                    (json.dumps(merged, ensure_ascii=False),),
                 )
             return {
                 "group_count": len(result.groups),

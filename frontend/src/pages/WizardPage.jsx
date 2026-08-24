@@ -272,7 +272,7 @@ export default function WizardPage({ onDone, onCancel }) {
             </div>
 
             <p className="hint" style={{ marginTop: 14 }}>
-              初始推算里程：{formatMileage(startM)} ～ {formatMileage(endM)}。
+              初始推算里程：{formatMileage(Math.min(startM, endM))} ～ {formatMileage(Math.max(startM, endM))}。
               建立後可隨時輸入實體里程牌錨點即時修正。
             </p>
             {error && <p className="err-text">{error}</p>}

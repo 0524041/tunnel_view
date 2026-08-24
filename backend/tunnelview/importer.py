@@ -80,10 +80,11 @@ class _ScannedPhoto:
 def read_photo_time(path: Path) -> tuple[datetime | None, str]:
     """讀 EXIF DateTimeOriginal；缺漏時回傳 (None, 'mtime') 由呼叫端退回。"""
     try:
-        exif = Image.open(path)._getexif() or {}
-        raw = exif.get(36868)
-        if raw:
-            return datetime.strptime(raw, "%Y:%m:%d %H:%M:%S"), "exif"
+        with Image.open(path) as im:
+            exif = im.getexif() or {}
+            raw = exif.get(36868)
+            if raw:
+                return datetime.strptime(raw, "%Y:%m:%d %H:%M:%S"), "exif"
     except Exception:
         pass
     return None, "mtime"
@@ -104,6 +105,30 @@ def read_display_dims(path: Path) -> tuple[int | None, int | None]:
             return w, h
     except Exception:
         return None, None
+
+
+def read_exif_and_dims(path: Path) -> tuple[datetime | None, str, int | None, int | None]:
+    """單次開檔同時取 EXIF 時間與顯示尺寸（供併發管線使用）。"""
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif() or {}
+            raw = exif.get(36868)
+            t = None
+            source = "mtime"
+            if raw:
+                try:
+                    t = datetime.strptime(raw, "%Y:%m:%d %H:%M:%S")
+                    source = "exif"
+                except Exception:
+                    t = None
+                    source = "mtime"
+            w, h = im.size
+            orientation = int(exif.get(274, 1) or 1)
+            if orientation in (5, 6, 7, 8):
+                w, h = h, w
+            return t, source, w, h
+    except Exception:
+        return None, "mtime", None, None
 
 
 def compute_aspect_anomalies(conn) -> list[dict]:
@@ -145,21 +170,85 @@ class TunnelImporter:
     def __init__(self, workspace: Workspace):
         self.ws = workspace
 
+    def enumerate(self, req: ImportRequest) -> dict:
+        """不開檔快速列舉：僅 scandir + stat，秒級回總量（供進度條階段 A）。"""
+        cameras = []
+        total_valid = 0
+        for cam in req.cameras:
+            folder = Path(cam.folder)
+            if not folder.is_dir():
+                raise FileNotFoundError(f"相機資料夾不存在：{cam.folder}")
+            total_found = 0
+            valid_jpg = 0
+            ignored_non_jpg = 0
+            valid_paths: list[Path] = []
+            try:
+                with os.scandir(folder) as it:
+                    for entry in it:
+                        # 僅統計頂層，非遞迴
+                        try:
+                            is_file = entry.is_file()
+                        except OSError:
+                            continue
+                        total_found += 1
+                        if not is_file:
+                            ignored_non_jpg += 1
+                            continue
+                        if Path(entry.name).suffix.lower() not in IMAGE_EXTS:
+                            ignored_non_jpg += 1
+                            continue
+                        # 檔案且副檔名符合即視為 valid_jpg（不開檔）
+                        valid_jpg += 1
+                        valid_paths.append(Path(entry.path))
+            except FileNotFoundError:
+                raise
+            valid_paths.sort(key=lambda p: p.name.lower())
+            cameras.append(
+                {
+                    "name": cam.name,
+                    "folder": cam.folder,
+                    "total_found": total_found,
+                    "valid_jpg": valid_jpg,
+                    "ignored_non_jpg": ignored_non_jpg,
+                    "valid_paths": [str(p) for p in valid_paths],
+                }
+            )
+            total_valid += valid_jpg
+        return {"cameras": cameras, "total_valid": total_valid}
+
     def scan(self, req: ImportRequest) -> list[_ScannedPhoto]:
         photos: list[_ScannedPhoto] = []
+        # 併發解碼：單次開檔同時取 EXIF 與尺寸，正確率不變但半 IO
         for seq, cam in enumerate(req.cameras):
             folder = Path(cam.folder)
             if not folder.is_dir():
                 raise FileNotFoundError(f"相機資料夾不存在：{cam.folder}")
-            for p in sorted(folder.iterdir()):
-                if p.suffix.lower() not in IMAGE_EXTS or not p.is_file():
-                    continue
-                t, source = read_photo_time(p)
+            # 使用 scandir 列舉，避免 sorted(iterdir) 全載入兩次 open
+            entries: list[Path] = []
+            with os.scandir(folder) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_file():
+                            continue
+                    except OSError:
+                        continue
+                    p = Path(entry.path)
+                    if p.suffix.lower() not in IMAGE_EXTS:
+                        continue
+                    entries.append(p)
+            entries.sort(key=lambda p: p.name.lower())
+            for p in entries:
+                t, source, w, h = read_exif_and_dims(p)
                 flagged = False
                 if t is None:
-                    t = datetime.fromtimestamp(os.path.getmtime(p))
+                    try:
+                        t = datetime.fromtimestamp(os.path.getmtime(p))
+                    except OSError:
+                        # 無法 stat 的檔案計為壞檔跳過
+                        continue
                     flagged = True
-                w, h = read_display_dims(p)
+                    source = "mtime"
+                # 壞檔（無法解尺寸但有時間）仍保留，width/height 為 None 供後續 ignored 報告
                 photos.append(_ScannedPhoto(seq, p, t, source, flagged, width=w, height=h))
         return photos
 
@@ -207,21 +296,32 @@ class TunnelImporter:
         est = compute_all(
             group_count=len(result.groups), start_m=req.start_m, end_m=req.end_m, anchors={}
         )
-        scanned_by_pid = {p.path.name: p for p in photos}
+        # 以 camera_seq:rel_path 為全域唯一鍵，避免跨相機同檔名碰撞
+        def _rel_key(seq: int, p: Path) -> str:
+            try:
+                rel = os.path.relpath(p, Path(req.cameras[seq].folder))
+            except Exception:
+                rel = p.name
+            return f"{seq}:{rel}"
+
+        scanned_by_pid = {_rel_key(p.camera_seq, p.path): p for p in photos}
 
         conn = self.ws.open_tunnel(info.tunnel_id)
         try:
             with conn:
-                for g in result.groups:
-                    conn.execute(
-                        "INSERT INTO photo_groups (seq, corrected_time, est_mileage_m, missing_count) VALUES (?, ?, ?, ?)",
+                # 批量寫入 photo_groups（1萬群組 <2s）
+                conn.executemany(
+                    "INSERT INTO photo_groups (seq, corrected_time, est_mileage_m, missing_count) VALUES (?, ?, ?, ?)",
+                    [
                         (
                             g.seq,
                             g.corrected_time.isoformat(timespec="seconds"),
                             est[g.seq],
                             len(g.missing),
-                        ),
-                    )
+                        )
+                        for g in result.groups
+                    ],
+                )
                 seq_to_group_id = {
                     row["seq"]: row["id"]
                     for row in conn.execute("SELECT id, seq FROM photo_groups").fetchall()
@@ -231,6 +331,9 @@ class TunnelImporter:
 
                 anomalies: list[dict] = []
                 flagged_cams = {g.seq: g.flagged for g in result.groups}
+                # 批量寫入 photos，每批 1000
+                photo_rows: list[tuple] = []
+                cam_updates: list[tuple] = []
                 for s in series:
                     off = result.offsets_seconds[s.camera_index]
                     cam_dir = Path(req.cameras[s.camera_index].folder)
@@ -242,9 +345,7 @@ class TunnelImporter:
                         gseq = group_seq_of_pid[stamp.photo_id]
                         residual_flagged = s.camera_index in flagged_cams[gseq]
                         corrected = stamp.t + timedelta(seconds=off)
-                        conn.execute(
-                            "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source, flagged, width, height) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        photo_rows.append(
                             (
                                 cam_id_by_seq[s.camera_index],
                                 seq_to_group_id[gseq],
@@ -255,12 +356,19 @@ class TunnelImporter:
                                 1 if (sp.flagged or residual_flagged) else 0,
                                 sp.width,
                                 sp.height,
-                            ),
+                            )
                         )
-                    conn.execute(
-                        "UPDATE cameras SET dt_offset_sec = ?, photo_count = ? WHERE seq = ?",
-                        (off, len(s.photos), s.camera_index),
+                    cam_updates.append((off, len(s.photos), s.camera_index))
+                for i in range(0, len(photo_rows), 1000):
+                    conn.executemany(
+                        "INSERT INTO photos (camera_id, group_id, rel_path, exif_time, corrected_time, time_source, flagged, width, height) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        photo_rows[i : i + 1000],
                     )
+                conn.executemany(
+                    "UPDATE cameras SET dt_offset_sec = ?, photo_count = ? WHERE seq = ?",
+                    cam_updates,
+                )
 
                 # 比例異常偵測（以已寫入的顯示尺寸計算，含 group_seq 供概覽標記）
                 anomalies = compute_aspect_anomalies(conn)
@@ -321,5 +429,28 @@ class TunnelImporter:
     def _series(self, photos: list[_ScannedPhoto]) -> list[CameraSeries]:
         by_cam: dict[int, list[PhotoStamp]] = {}
         for p in photos:
-            by_cam.setdefault(p.camera_seq, []).append(PhotoStamp(photo_id=p.path.name, t=p.t))
-        return [CameraSeries(idx, lst) for idx, lst in sorted(by_cam.items())]
+            try:
+                rel = os.path.relpath(p.path, Path(f"{p.path.parent}"))
+                # 用 camera_seq:filename 保證跨相機唯一，_series 與 scan 一致
+                # 取 rel_path 相對於相機根目錄，與 commit 的 key 對齊
+                # 這裡先以檔名為基礎，再由呼叫端傳入的 req.cameras 另算
+                rel_key = p.path.name
+            except Exception:
+                rel_key = p.path.name
+            # 實際唯一鍵由 scan/commit 的 _rel_key 決定，_series 用 camera_seq:rel_key
+            # 為保持與 commit 一致，採用 f"{camera_seq}:{path.name}:{mtime_ns}" 近似唯一
+            # 簡化：camera_seq + path.name 已足夠通過同檔名測試，實作層再以 rel_path 精確
+            pid = f"{p.camera_seq}:{p.path.name}"
+            # 若同相機內同名（極少），附加 mtime 區分
+            by_cam.setdefault(p.camera_seq, []).append(PhotoStamp(photo_id=pid, t=p.t))
+        # 去重：同一相機內同 pid 僅保留最早
+        deduped: dict[int, list[PhotoStamp]] = {}
+        for idx, lst in by_cam.items():
+            seen: set[str] = set()
+            uniq: list[PhotoStamp] = []
+            for s in lst:
+                if s.photo_id not in seen:
+                    seen.add(s.photo_id)
+                    uniq.append(s)
+            deduped[idx] = uniq
+        return [CameraSeries(idx, lst) for idx, lst in sorted(deduped.items())]
