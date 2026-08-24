@@ -77,14 +77,26 @@ class _ScannedPhoto:
     height: int | None = None
 
 
+def _extract_dt_original(exif) -> datetime | None:
+    """DateTimeOriginal(36868) 位於 Exif SubIFD；真實相機（如 Sony）不會放在 IFD0。"""
+    raw = exif.get(36868)
+    if not raw:
+        raw = (exif.get_ifd(0x8769) or {}).get(36868)
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        return None
+
+
 def read_photo_time(path: Path) -> tuple[datetime | None, str]:
     """讀 EXIF DateTimeOriginal；缺漏時回傳 (None, 'mtime') 由呼叫端退回。"""
     try:
         with Image.open(path) as im:
-            exif = im.getexif() or {}
-            raw = exif.get(36868)
-            if raw:
-                return datetime.strptime(raw, "%Y:%m:%d %H:%M:%S"), "exif"
+            t = _extract_dt_original(im.getexif() or {})
+            if t:
+                return t, "exif"
     except Exception:
         pass
     return None, "mtime"
@@ -111,19 +123,10 @@ def read_exif_and_dims(path: Path) -> tuple[datetime | None, str, int | None, in
     """單次開檔同時取 EXIF 時間與顯示尺寸（供併發管線使用）。"""
     try:
         with Image.open(path) as im:
-            exif = im.getexif() or {}
-            raw = exif.get(36868)
-            t = None
-            source = "mtime"
-            if raw:
-                try:
-                    t = datetime.strptime(raw, "%Y:%m:%d %H:%M:%S")
-                    source = "exif"
-                except Exception:
-                    t = None
-                    source = "mtime"
+            t = _extract_dt_original(im.getexif() or {})
+            source = "exif" if t else "mtime"
             w, h = im.size
-            orientation = int(exif.get(274, 1) or 1)
+            orientation = int((im.getexif() or {}).get(274, 1) or 1)
             if orientation in (5, 6, 7, 8):
                 w, h = h, w
             return t, source, w, h

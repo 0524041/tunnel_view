@@ -129,3 +129,45 @@ class TestCommit:
             assert row["flagged"] == 1
         finally:
             conn.close()
+
+
+def make_camera_jpg(path, dt_original):
+    """模擬真實相機（Sony）JPG：DateTimeOriginal 存於 Exif SubIFD 而非 IFD0。"""
+    img = Image.new("RGB", (8, 6), color=(30, 30, 30))
+    exif = Image.Exif()
+    exif.get_ifd(0x8769)[36868] = dt_original.strftime("%Y:%m:%d %H:%M:%S")
+    img.save(path, exif=exif.tobytes())
+
+
+class TestRealCameraExif:
+    """真實相機把 DateTimeOriginal 放在 Exif SubIFD；退回 mtime 會破壞對齊正確性。"""
+
+    def test_read_photo_time_from_sub_ifd(self, tmp_path):
+        from datetime import datetime
+
+        from tunnelview.importer import read_photo_time
+
+        p = tmp_path / "DSC0001.JPG"
+        make_camera_jpg(p, datetime(2026, 5, 28, 20, 49, 3))
+        t, source = read_photo_time(p)
+        assert source == "exif"
+        assert t is not None
+        assert t.year == 2026 and t.second == 3
+
+    def test_scan_not_flagged_for_camera_files(self, ws, cam_dirs):
+        from datetime import datetime, timedelta
+
+        d0, d1 = cam_dirs
+        base = datetime(2026, 5, 28, 20, 49, 0)
+        make_jpg(d0 / "KEEP.JPG", base + timedelta(seconds=40))
+        make_camera_jpg(d1 / "CAM.JPG", base + timedelta(seconds=140))
+        req = ImportRequest(
+            name="t",
+            start_m=23000,
+            end_m=24200,
+            tolerance_seconds=2.0,
+            cameras=[CameraInput(name="A", folder=str(d0)), CameraInput(name="B", folder=str(d1))],
+        )
+        preview = TunnelImporter(ws).preview(req)
+        # CAM.JPG 若退回 mtime 會被標記 flagged；讀到 SubIFD EXIF 則不應 flagged
+        assert preview.flagged_count == 0
