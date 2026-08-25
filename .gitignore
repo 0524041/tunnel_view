@@ -9,6 +9,9 @@ data/
 .thumb_cache/
 .DS_Store
 
+.scratch/
+test.xlsx
+
 八卦山西行/
 
 # run.sh 執行期產物
