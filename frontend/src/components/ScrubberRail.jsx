@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useEffect, useRef, useState } from 'react'
-import { fmtMileage, pickStep, clampView, zoomView, followCurrent, idxToX, xToIdx } from '../lib/scrubberMath.js'
+import { fmtMileage, pickStep, clampView, zoomView, followCurrent, idxToX, xToIdx, mileageToIdx } from '../lib/scrubberMath.js'
 
 const ANOMALY_COLOR = '#e857a0'
 
@@ -94,47 +94,11 @@ export default function ScrubberRail({
   const toDispIdx = (idx) => (isReversed ? n - 1 - idx : idx)
   const fromDispIdx = (dispIdx) => (isReversed ? n - 1 - dispIdx : dispIdx)
 
-  // 里程 → x：在可視群組區間內以 est 線性內插，讓刻度落在真實樁號位置（支援遞增/遞減）
-  const mileageToIdx = (m) => {
-    const [dv0, dv1] = dispPair()
-    let lo = Math.max(0, Math.floor(dv0))
-    let hi = Math.min(n - 1, Math.ceil(dv1))
-    if (hi <= lo) return lo
-    // 區間外插：按該側斜率外插，無論增減
-    const eLo = est[lo]
-    const eHi = est[hi]
-    const loNext = est[Math.min(lo + 1, n - 1)]
-    const hiPrev = est[Math.max(hi - 1, 0)]
-    const slopeLo = loNext - eLo
-    const slopeHi = eHi - hiPrev
-    const minE = Math.min(eLo, eHi)
-    const maxE = Math.max(eLo, eHi)
-    if (m < minE) {
-      if (eHi < eLo) return hi + (m - eHi) / Math.max(slopeHi, 1e-6)
-      return lo - (eLo - m) / Math.max(slopeLo, 1e-6)
-    }
-    if (m > maxE) {
-      if (eHi > eLo) return hi + (m - eHi) / Math.max(slopeHi, 1e-6)
-      return lo - (eLo - m) / Math.max(-slopeLo, 1e-6)
-    }
-    for (let i = lo; i < hi; i++) {
-      const a = est[i]
-      const b = est[i + 1]
-      if ((a <= m && m <= b) || (a >= m && m >= b)) {
-        const t = (m - a) / Math.max(b - a, 1e-6)
-        return i + t
-      }
-    }
-    const isInc = (est[0] ?? 0) <= (est[n - 1] ?? 0)
-    let l = lo, h = hi
-    while (h - l > 1) {
-      const mid = (l + h) >> 1
-      if (isInc ? est[mid] < m : est[mid] > m) l = mid
-      else h = mid
-    }
-    const e0 = est[l]
-    const e1 = est[h]
-    return l + ((m - e0) / Math.max(e1 - e0, 1e-6)) * (h - l)
+  // 里程 → x：mileageToIdx 在「真實 seq 空間」以 est 內插（純函式、正反方向皆可），
+  // 最後一步才轉換到顯示空間取 x。不可把顯示空間視窗值傳給內插——反向隧道會塌縮。
+  const mileageToX = (m, W) => {
+    const [v0, v1] = viewRef.current
+    return idxToX(toDispIdx(mileageToIdx(est, m, v0, v1)), ...dispPair(), W, PAD)
   }
 
   function draw() {
@@ -184,8 +148,7 @@ export default function ScrubberRail({
     ctx.font = '10px "IBM Plex Mono", monospace'
     ctx.textAlign = 'center'
     for (let m = firstM; m <= lastM + 1e-6; m += minorStep) {
-      const dispIdx = mileageToIdx(m)
-      const x = idxToX(dispIdx, ...dispPair(), W, PAD)
+      const x = mileageToX(m, W)
       if (x < PAD - 2 || x > W - PAD + 2) continue
       const isMajor = Math.abs(m % step) < 1e-6 || Math.abs((m % step) - step) < 1e-6
       // 枕木：貫穿雙壁之間的短橫木
@@ -212,8 +175,8 @@ export default function ScrubberRail({
     }
 
     // 起訖樁號：僅在進入可視範圍時顯示（避免「看得到 27k 卻點不到」的幽靈標籤）
-    const xStart = idxToX(mileageToIdx(sortedStart), ...dispPair(), W, PAD)
-    const xEnd = idxToX(mileageToIdx(sortedEnd), ...dispPair(), W, PAD)
+    const xStart = mileageToX(sortedStart, W)
+    const xEnd = mileageToX(sortedEnd, W)
     ctx.font = '600 10px "IBM Plex Mono", monospace'
     if (xStart >= PAD - 2 && xStart <= W - PAD + 2) {
       ctx.fillStyle = 'rgba(120,200,120,0.85)'

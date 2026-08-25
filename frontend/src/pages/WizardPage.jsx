@@ -264,6 +264,9 @@ export default function WizardPage({ onDone, onCancel }) {
               ))}
               <option value="new">＋ 新增專案…</option>
             </select>
+            <p className="hint" style={{ marginTop: 4 }}>
+              建議隧道名稱含方向與年份，例「鳥踏坑西行-2026」；同一案子（專案）下的多次拍攝就會歸在一起。
+            </p>
 
             <div className="wiz-actions">
               <button type="button" className="btn" onClick={onCancel}>取消</button>

@@ -256,3 +256,43 @@ class TestJobPersistence:
         ws.job_prune(ttl_sec=24 * 3600, max_n=32)
         remaining = ws.job_count()
         assert remaining <= 32
+
+
+class TestTunnelTimestamps:
+    """總覽卡片契約：每條隧道回報建立時間與模型最後修改時間。"""
+
+    def test_list_tunnels_full_reports_created_and_updated(self, tmp_path, ws):
+        ws.init()
+        info = ws.create_tunnel(
+            name="t", start_m=0, end_m=100,
+            cameras=[{"name": "C", "root_path": str(tmp_path / "cam")}] if (tmp_path / "cam").exists() else [{"name": "C", "root_path": "."}],
+            tolerance_seconds=2.0,
+        )
+        rows = {r["tunnel_id"]: r for r in ws.list_tunnels_full()}
+        r = rows[info.tunnel_id]
+        assert r["created_at"], "必須回報建立時間"
+        assert r["updated_at"], "必須回報模型最後修改時間（DB 檔 mtime）"
+
+    def test_updated_at_advances_after_model_write(self, tmp_path, ws):
+        import os
+        import time as _time
+
+        ws.init()
+        info = ws.create_tunnel(
+            name="t", start_m=0, end_m=100,
+            cameras=[{"name": "C", "root_path": str(tmp_path)}],
+            tolerance_seconds=2.0,
+        )
+        before = next(r for r in ws.list_tunnels_full() if r["tunnel_id"] == info.tunnel_id)["updated_at"]
+        _time.sleep(1.1)  # mtime 秒級解析度，確保可觀察差異
+        conn = ws.open_tunnel(info.tunnel_id)
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('probe', '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                )
+        finally:
+            conn.close()
+        after = next(r for r in ws.list_tunnels_full() if r["tunnel_id"] == info.tunnel_id)["updated_at"]
+        assert after > before, f"寫入後 updated_at 應前進：{before} → {after}"

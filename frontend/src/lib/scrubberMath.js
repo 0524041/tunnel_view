@@ -55,3 +55,53 @@ export function idxToX(idx, v0, v1, W, pad) {
 export function xToIdx(px, v0, v1, W, pad) {
   return v0 + ((px - pad) / Math.max(W - pad * 2, 1e-9)) * (v1 - v0)
 }
+
+/**
+ * 里程 → 群組序號（真實 seq 空間分數索引）。
+ *
+ * 在可視視窗 [v0, v1]（真實序號、v0<v1）內以 est 線性內插；超出時按該側斜率外插。
+ * 支援遞增與遞減里程——所有除法保留符號（不得用 max(denom, ε) 夾正，
+ * 否則遞減里程會產生巨大負索引、刻度全部塌縮亂擠）。
+ */
+export function mileageToIdx(est, m, v0, v1) {
+  const n = est.length
+  let lo = Math.max(0, Math.floor(v0))
+  let hi = Math.min(n - 1, Math.ceil(v1))
+  if (hi <= lo) return lo
+  const eLo = est[lo]
+  const eHi = est[hi]
+  const loNext = est[Math.min(lo + 1, n - 1)]
+  const hiPrev = est[Math.max(hi - 1, 0)]
+  const slopeLo = loNext - eLo
+  const slopeHi = eHi - hiPrev
+  const minE = Math.min(eLo, eHi)
+  const maxE = Math.max(eLo, eHi)
+  if (m < minE) {
+    // 落在較小里程之外：沿該側端點外插
+    if (eHi < eLo) return slopeHi === 0 ? hi : hi + (m - eHi) / slopeHi
+    return slopeLo === 0 ? lo : lo + (m - eLo) / slopeLo
+  }
+  if (m > maxE) {
+    // 落在較大里程之外
+    if (eHi > eLo) return slopeHi === 0 ? hi : hi + (m - eHi) / slopeHi
+    return slopeLo === 0 ? lo : lo + (m - eLo) / slopeLo
+  }
+  for (let i = lo; i < hi; i++) {
+    const a = est[i]
+    const b = est[i + 1]
+    if (a === b) continue
+    if ((a <= m && m <= b) || (a >= m && m >= b)) {
+      return i + (m - a) / (b - a)
+    }
+  }
+  // 兜底二分（帶符號）
+  const isInc = (est[0] ?? 0) <= (est[n - 1] ?? 0)
+  let l = lo, h = hi
+  while (h - l > 1) {
+    const mid = (l + h) >> 1
+    if (isInc ? est[mid] < m : est[mid] > m) l = mid
+    else h = mid
+  }
+  const denom = est[h] - est[l]
+  return l + (denom === 0 ? 0 : (m - est[l]) / denom)
+}

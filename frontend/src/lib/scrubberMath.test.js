@@ -98,3 +98,39 @@ test('idxToX / xToIdx 互為反函數', () => {
     assert.ok(Math.abs(xToIdx(x, v[0], v[1], W, pad) - idx) < 1e-9)
   }
 })
+
+import { mileageToIdx } from './scrubberMath.js'
+
+test('mileageToIdx：遞增里程在區間內線性內插', () => {
+  const est = Array.from({ length: 101 }, (_, i) => i * 10) // 0,10,...1000
+  const idx = mileageToIdx(est, 505, 0, 100)
+  assert.ok(idx > 49 && idx < 52, `idx=${idx}`)
+})
+
+test('mileageToIdx：遞增里程低於可視下界時向外插', () => {
+  const est = Array.from({ length: 101 }, (_, i) => i * 10)
+  const idx = mileageToIdx(est, -30, 20, 80)
+  assert.ok(idx < 20, `idx=${idx}`)
+})
+
+test('mileageToIdx：遞減里程（反向隧道）同樣成立——回歸：不可全部塌縮成一點', () => {
+  // 回歸測試：R8 版把顯示空間索引拿去 index est，反向時 hi<=lo 恆成立，
+  // 所有刻度回傳同一點（全部擠到旁邊）
+  const est = Array.from({ length: 101 }, (_, i) => 1000 - i * 10) // 1000→0
+  const out = []
+  for (let m = 0; m <= 1000; m += 100) {
+    out.push(mileageToIdx(est, m, 0, 100))
+  }
+  // 不同里程必須對應不同索引且嚴格遞減
+  for (let k = 1; k < out.length; k++) {
+    assert.ok(out[k] < out[k - 1], `m=${k * 100}: ${out[k]} !< ${out[k - 1]}`)
+  }
+})
+
+test('mileageToIdx：單調性——里程越大索引位置越靠該方向的深處', () => {
+  const inc = Array.from({ length: 51 }, (_, i) => 27000 + i * 7)
+  assert.ok(mileageToIdx(inc, 27200, 0, 50) > mileageToIdx(inc, 27100, 0, 50))
+  const dec = Array.from({ length: 51 }, (_, i) => 30400 - i * 7)
+  // 遞減：est[0]=30400 最大 → 里程越大、真實索引越小
+  assert.ok(mileageToIdx(dec, 30200, 0, 50) > mileageToIdx(dec, 30300, 0, 50))
+})

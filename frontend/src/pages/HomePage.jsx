@@ -18,7 +18,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { formatMileage } from '../lib/mileage'
 
+// created_at 由 SQLite datetime('now') 產生＝UTC；updated_at 為本機 ISO
+function fmtDateTime(s, utc = false) {
+  if (!s) return null
+  const d = new Date(utc ? String(s).replace(' ', 'T') + 'Z' : s)
+  if (isNaN(d)) return null
+  const p = (x) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 function TunnelCard({ t, projectName, onOpen, onDelete, onMove }) {
+  const createdAt = fmtDateTime(t.created_at, true)
+  const updatedAt = fmtDateTime(t.updated_at)
   return (
     <button type="button" className="tunnel-card panel" onClick={() => onOpen(t.tunnel_id, t.name)}>
       <div className="tc-top">
@@ -29,6 +40,12 @@ function TunnelCard({ t, projectName, onOpen, onDelete, onMove }) {
       <div className="mono tc-range">
         {formatMileage(t.start_m)} <span className="arrow">⟶</span> {formatMileage(t.end_m)}
       </div>
+      {(createdAt || updatedAt) && (
+        <div className="hint mono" style={{ textAlign: 'left', fontSize: 11 }}>
+          建 {createdAt || '—'}
+          {updatedAt && updatedAt !== createdAt ? ` · 改 ${updatedAt}` : ''}
+        </div>
+      )}
       <div className="tc-foot hint">
         <span>開啟檢視 <span className="mono">#{String(t.tunnel_id).padStart(3, '0')}</span></span>
         <span style={{ display: 'inline-flex', gap: 6 }}>
@@ -56,7 +73,8 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState(() => new Set())
   const [moveTarget, setMoveTarget] = useState(null) // 隧道物件
-  const [renaming, setRenaming] = useState(null) // 專案物件
+  // 專案輸入視窗：{ mode:'create', moveTo:tunnel|null } | { mode:'rename', project }
+  const [projModal, setProjModal] = useState(null)
 
   const refresh = () => {
     api.listTunnels().then(setTunnels).catch(() => {})
@@ -134,25 +152,22 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
     }
   }
 
-  const createAndMove = async () => {
-    const name = window.prompt('新專案名稱：')
+  // 專案輸入視窗確認：create（可選擇順手把隧道移入）或 rename
+  const submitProjModal = async (name) => {
     if (!name || !name.trim()) return
+    const trimmed = name.trim()
     try {
-      const p = await api.createProject(name.trim())
-      await api.moveTunnel(moveTarget.tunnel_id, p.id)
-      setMoveTarget(null)
-      refresh()
-    } catch (e) {
-      alert(e.message)
-    }
-  }
-
-  const doRename = async () => {
-    const name = window.prompt('新的專案名稱：', renaming.name)
-    if (!name || !name.trim() || name.trim() === renaming.name) return setRenaming(null)
-    try {
-      await api.renameProject(renaming.id, name.trim())
-      setRenaming(null)
+      if (projModal.mode === 'rename') {
+        if (trimmed === projModal.project.name) return setProjModal(null)
+        await api.renameProject(projModal.project.id, trimmed)
+      } else {
+        const p = await api.createProject(trimmed)
+        if (projModal.moveTo) {
+          await api.moveTunnel(projModal.moveTo.tunnel_id, p.id)
+          setMoveTarget(null)
+        }
+      }
+      setProjModal(null)
       refresh()
     } catch (e) {
       alert(e.message)
@@ -192,7 +207,10 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button type="button" className="btn primary" onClick={onNewTunnel}>＋ 建立新隧道</button>
+          <span style={{ display: 'inline-flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={() => setProjModal({ mode: 'create', moveTo: null })}>＋ 新增專案</button>
+            <button type="button" className="btn primary" onClick={onNewTunnel}>＋ 建立新隧道</button>
+          </span>
         </div>
 
         {tunnels === null && (
@@ -244,7 +262,7 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
                 <span className="chip" style={{ marginLeft: 8 }}>{p.tunnels.length}</span>
               </button>
               <span style={{ display: 'inline-flex', gap: 6 }}>
-                <button type="button" className="btn small" onClick={() => setRenaming(p)}>✏️ 改名</button>
+                <button type="button" className="btn small" onClick={() => setProjModal({ mode: 'rename', project: p })}>✏️ 改名</button>
                 <button type="button" className="btn danger small" onClick={() => deleteProject(p)}>🗑 刪除專案</button>
               </span>
             </div>
@@ -260,6 +278,12 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
         {(ungrouped.length > 0 || (q && ungrouped.length === 0 && visibleProjects.length === 0 && tunnels?.length)) && (
           <section style={{ marginBottom: 24 }}>
             <span className="label">📁 未分類</span>
+            {ungrouped.length >= 3 && !q && (
+              <p className="hint" style={{ margin: '4px 0 0' }}>
+                💡 有 {ungrouped.length} 條隧道未歸檔。點上方「＋ 新增專案」建立案子（例：台76線八卦山隧道），
+                再用各卡片的「📁 移動」把西行／東行／不同年份的隧道收進去。
+              </p>
+            )}
             <div className="cards" style={{ marginTop: 10 }}>
               {ungrouped.length === 0
                 ? <p className="hint" style={{ gridColumn: '1/-1' }}>沒有符合搜尋的隧道</p>
@@ -291,37 +315,53 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
                   📁 {p.name}{moveTarget.project_id === p.id ? '（目前）' : ''}
                 </button>
               ))}
-              <button type="button" className="btn primary" onClick={createAndMove}>＋ 新增專案並移入</button>
+              <button type="button" className="btn primary" onClick={() => setProjModal({ mode: 'create', moveTo: moveTarget })}>＋ 新增專案並移入</button>
               <button type="button" className="btn" onClick={() => setMoveTarget(null)}>取消</button>
             </div>
           </div>
         </div>
       )}
 
-      {renaming && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 60,
-            display: 'grid', placeItems: 'center',
-          }}
-          onClick={() => setRenaming(null)}
-        >
-          <div className="panel" style={{ minWidth: 300, padding: 20 }} onClick={(e) => e.stopPropagation()}>
-            <div className="display" style={{ marginBottom: 12 }}>重新命名專案</div>
-            <input
-              id="rename-input"
-              className="field"
-              defaultValue={renaming.name}
-              onKeyDown={(e) => e.key === 'Enter' && doRename()}
-              autoFocus
-            />
-            <div style={{ display: 'flex', gap: 8, marginTop: 14, justifyContent: 'flex-end' }}>
-              <button type="button" className="btn" onClick={() => setRenaming(null)}>取消</button>
-              <button type="button" className="btn primary" onClick={doRename}>確定</button>
+      {projModal && (() => {
+        const isRename = projModal.mode === 'rename'
+        const title = isRename ? '重新命名專案' : '新增專案'
+        const initial = isRename ? projModal.project.name : ''
+        const close = () => setProjModal(null)
+        const submit = () => submitProjModal(document.getElementById('proj-name-input')?.value)
+        return (
+          <div
+            style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 70,
+              display: 'grid', placeItems: 'center',
+            }}
+            onClick={close}
+          >
+            <div className="panel" style={{ minWidth: 320, padding: 20 }} onClick={(e) => e.stopPropagation()}>
+              <div className="display" style={{ marginBottom: 12 }}>
+                {title}
+                {!isRename && projModal.moveTo && (
+                  <span className="hint" style={{ marginLeft: 8 }}>建立後將「{projModal.moveTo.name}」移入</span>
+                )}
+              </div>
+              <input
+                id="proj-name-input"
+                className="field"
+                placeholder="專案名稱，例：台14線鳥踏坑隧道"
+                defaultValue={initial}
+                onKeyDown={(e) => e.key === 'Enter' && submit()}
+                autoFocus
+              />
+              <p className="hint" style={{ marginTop: 8 }}>
+                專案＝案子層級（如「台76線八卦山隧道」）；底下可放西行／東行／不同年份的多條隧道。
+              </p>
+              <div style={{ display: 'flex', gap: 8, marginTop: 14, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn" onClick={close}>取消</button>
+                <button type="button" className="btn primary" onClick={submit}>確定</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

@@ -165,3 +165,27 @@ class TestScanWorkersAndProgress:
         photos = TunnelImporter(ws).scan(req, progress=ticks.append)
         assert len(photos) == 10
         assert ticks and ticks[-1] == 10
+
+    def test_scan_progress_reports_increments_not_cumulative(self, ws, tmp_path):
+        """progress 契約＝增量：所有回呼數值總和必須等於總張數。
+
+        回歸歸測試：舊版送「每相機累計值」（50,100,...），api 端當增量累加，
+        導致 job.done 瞬間衝到 total（進度條假滿格）。
+        """
+        from datetime import datetime, timedelta
+
+        base = datetime(2026, 5, 28, 20, 49, 0)
+        d0, d1 = tmp_path / "cam0", tmp_path / "cam1"
+        d0.mkdir()
+        d1.mkdir()
+        for i in range(120):
+            make_jpg(d0 / f"A{i:03d}.JPG", base + timedelta(seconds=i))
+        for i in range(30):
+            make_jpg(d1 / f"B{i:03d}.JPG", base + timedelta(seconds=i))
+        req = ImportRequest(name="t", start_m=0, end_m=100, tolerance_seconds=2.0,
+                            cameras=[CameraInput(name="A", folder=str(d0)), CameraInput(name="B", folder=str(d1))])
+        ticks = []
+        photos = TunnelImporter(ws).scan(req, progress=ticks.append)
+        assert len(photos) == 150
+        assert sum(ticks) == 150          # 增量總和 == 總張數
+        assert all(0 < t <= 50 for t in ticks)  # 每次增量不超過批次大小

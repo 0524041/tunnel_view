@@ -328,11 +328,13 @@ class TunnelImporter:
             done = 0
 
             def _tick():
+                # progress 契約＝增量（每次回報新增完成的張數，單次 ≤50）。
+                # 舊版送累計值被 api 端當增量累加，job.done 會瞬間衝到 total（假滿格）。
                 nonlocal done
                 done += 1
                 if progress is not None and done % 50 == 0:
                     try:
-                        progress(done)
+                        progress(50)
                     except Exception:
                         pass
 
@@ -397,9 +399,9 @@ class TunnelImporter:
                         self.ws.scan_cache_put(root_key, cache_rows)
                     except Exception:
                         pass  # 快取寫入失敗不影響掃描正確性
-            if progress is not None and entries:
+            if progress is not None and entries and (done % 50):
                 try:
-                    progress(done)
+                    progress(done % 50)  # 補送尾數增量
                 except Exception:
                     pass
             for sp in results:

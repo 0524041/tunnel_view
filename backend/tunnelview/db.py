@@ -434,6 +434,7 @@ class Workspace:
                 rows = conn.execute(
                     """
                     SELECT t.id AS tunnel_id, t.name, t.start_m, t.end_m, t.camera_count,
+                           t.db_filename AS db_filename,
                            t.project_id AS project_id, p.name AS project_name,
                            t.last_opened_at AS last_opened_at,
                            t.created_at AS created_at
@@ -451,7 +452,23 @@ class Workspace:
                     }
                     for t in self.list_tunnels()
                 ]
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            # 模型最後修改＝隧道 DB 檔（含 -wal）的 mtime 最大值：
+            # 任何寫入（錨點/合併/realign/標記缺照…）都會反映，無需各端點逐一維護欄位
+            mt = 0.0
+            base = self.root / r["db_filename"]
+            for suffix in ("", "-wal"):
+                try:
+                    mt = max(mt, Path(str(base) + suffix).stat().st_mtime)
+                except OSError:
+                    pass
+            d["updated_at"] = (
+                datetime.fromtimestamp(mt).isoformat(timespec="seconds") if mt else None
+            )
+            out.append(d)
+        return out
 
     def create_tunnel(
         self,
