@@ -94,6 +94,8 @@ export const api = {
     return r.json()
   },
 
+  orientationStats: (tid) => fetch(`/api/tunnels/${tid}/orientation-stats`).then(handle),
+
   overview: (tid) => fetch(`/api/tunnels/${tid}/overview`).then(handle),
 
   groups: (tid, around, before, after) =>

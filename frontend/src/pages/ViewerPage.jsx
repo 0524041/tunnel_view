@@ -28,6 +28,7 @@ import ReviewMode from '../components/ReviewMode'
 import OriginalViewer from '../components/OriginalViewer'
 import AnomalyOverview from '../components/AnomalyOverview'
 import HelpModal from '../components/HelpModal'
+import UnifyDialog from '../components/UnifyDialog'
 
 export default function ViewerPage({ tunnelId, active }) {
   const [ov, setOv] = useState(null)
@@ -50,6 +51,21 @@ export default function ViewerPage({ tunnelId, active }) {
   const [anomsBySeq, setAnomsBySeq] = useState({})
   const [locateTarget, setLocateTarget] = useState(null)
   const [displayOrder, setDisplayOrder] = useState(() => localStorage.getItem('tv_display_order') || 'asc')
+  const [unifyItems, setUnifyItems] = useState(null)
+
+  const openUnify = async () => {
+    try {
+      const stats = await api.orientationStats(tunnelId)
+      const mixed = (stats || []).filter((st) => st.minority)
+      if (!mixed.length) {
+        alert('各機位照片方向一致，不需要批次轉正。')
+        return
+      }
+      setUnifyItems(mixed)
+    } catch (e) {
+      alert(e.message)
+    }
+  }
 
   const refreshMeta = useCallback(() => {
     api.overview(tunnelId).then(setOv).catch(() => {})
@@ -239,6 +255,7 @@ export default function ViewerPage({ tunnelId, active }) {
           <button type="button" className={mode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>檢視</button>
           <button type="button" className={mode === 'anomalies' ? 'on' : ''} onClick={() => setMode('anomalies')}>異狀總覽</button>
         </div>
+        <button type="button" className="btn small" title="偵測各機位混合直橫式並批次轉正（含方向預覽）" onClick={openUnify}>↻ 批次轉正</button>
         <div className="vread mono">
           <span className="vread-seq">
             群組 <b>{String(current + 1).padStart(4, '0')}</b> / {ov.group_count}
@@ -383,6 +400,24 @@ export default function ViewerPage({ tunnelId, active }) {
       )}
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {unifyItems && (
+        <UnifyDialog
+          tunnelId={tunnelId}
+          items={unifyItems}
+          onClose={() => {
+            setUnifyItems(null)
+            refreshMeta()
+          }}
+          onApplied={() => {
+            setUnifyItems(null)
+            cacheRef.current.clear()
+            pendingRef.current.clear()
+            setGroups(new Map())
+            ensureWindow(tunnelId, current, cacheRef.current, pendingRef.current, setGroups)
+            refreshMeta()
+          }}
+        />
+      )}
 
       {origView && (
         <OriginalViewer

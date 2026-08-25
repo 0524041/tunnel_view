@@ -1043,6 +1043,10 @@ def create_app(workspace: Workspace) -> FastAPI:
         hub.broadcast(tid, {"type": "photo_updated", "photo_id": pid})
         return {"ok": True}
 
+    @app.get("/api/tunnels/{tid}/orientation-stats")
+    def get_orientation_stats(tid: int):
+        return service.orientation_stats(tid)
+
     @app.post("/api/tunnels/{tid}/cameras/{seq}/unify")
     def unify_camera_orientation(tid: int, seq: int, body: PhotoRotationBody):
         # 批次轉正：只接受 90/270（180 不改變直橫、0 無意義）

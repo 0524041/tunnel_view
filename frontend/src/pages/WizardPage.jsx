@@ -19,6 +19,7 @@ import { api } from '../lib/api'
 import { parseMileage, formatMileage } from '../lib/mileage'
 import FsBrowser from '../components/FsBrowser'
 import LayoutEditor from '../components/LayoutEditor'
+import UnifyDialog from '../components/UnifyDialog'
 
 export default function WizardPage({ onDone, onCancel }) {
   const [step, setStep] = useState(1)
@@ -39,7 +40,6 @@ export default function WizardPage({ onDone, onCancel }) {
   const jobIdRef = useRef(null)
   // 方向統一對話框：{tid, items:[{seq,camera,landscape,portrait}]}
   const [unify, setUnify] = useState(null)
-  const [unifyChoices, setUnifyChoices] = useState({}) // seq -> 90|270|skip
   const [error, setError] = useState('')
   const [displayOrder, setDisplayOrder] = useState(() => localStorage.getItem('tv_display_order') || 'asc')
   // R9 專案歸檔：''＝未分類；'new' 觸發就地新增
@@ -142,21 +142,6 @@ export default function WizardPage({ onDone, onCancel }) {
     }
   }
 
-  const applyUnifyAndFinish = async () => {
-    const { tid } = unify
-    for (const item of unify.items) {
-      const angle = unifyChoices[item.seq]
-      if (angle === 90 || angle === 270) {
-        try {
-          await api.unifyCameraOrientation(tid, item.seq, angle)
-        } catch {
-          /* 單機位失敗不阻斷進入檢視；之後可在照片上單張轉正 */
-        }
-      }
-    }
-    onDone(tid, name.trim())
-  }
-
   const commit = async () => {
     setBusy(true)
     try {
@@ -183,11 +168,7 @@ export default function WizardPage({ onDone, onCancel }) {
         /* 無統計資訊就跳過 */
       }
       if (mixed.length) {
-        setUnify({
-          tid,
-          items: mixed.map((s) => ({ ...s })),
-        })
-        setUnifyChoices(Object.fromEntries(mixed.map((s) => [s.seq, 90])))
+        setUnify({ tid, items: mixed })
         setBusy(false)
         return
       }
@@ -371,44 +352,12 @@ export default function WizardPage({ onDone, onCancel }) {
         )}
 
         {unify && (
-          <section>
-            <span className="display" style={{ fontSize: 18 }}>偵測到混合直橫式照片</span>
-            <p className="hint" style={{ marginTop: 6 }}>
-              以下機位的照片方向不一致。選擇轉正方向讓少數派照片對齊多數派（可預覽後再調整）；
-              選「略過」則保留現狀，之後仍可在照片上單張旋轉。
-            </p>
-            <table className="pv-table">
-              <thead><tr><th>視角</th><th>橫式</th><th>直式</th><th>少數派</th><th>處理</th></tr></thead>
-              <tbody>
-                {unify.items.map((s) => (
-                  <tr key={s.seq}>
-                    <td>{s.camera}</td>
-                    <td className="mono">{s.landscape}</td>
-                    <td className="mono">{s.portrait}</td>
-                    <td>{s.minority === 'portrait' ? '直式' : '橫式'}</td>
-                    <td>
-                      {[90, 270, 'skip'].map((v) => (
-                        <button
-                          key={String(v)}
-                          type="button"
-                          className={`btn small ${(unifyChoices[s.seq] ?? 90) === v ? 'primary' : 'ghost'}`}
-                          style={{ marginRight: 4 }}
-                          onClick={() => setUnifyChoices((c) => ({ ...c, [s.seq]: v }))}
-                        >
-                          {v === 90 ? '↻ 順時針' : v === 270 ? '↺ 逆時針' : '略過'}
-                        </button>
-                      ))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="wiz-actions">
-              <button type="button" className="btn" disabled={busy} onClick={applyUnifyAndFinish}>
-                完成並進入檢視
-              </button>
-            </div>
-          </section>
+          <UnifyDialog
+            tunnelId={unify.tid}
+            items={unify.items}
+            onClose={() => onDone(unify.tid, name.trim())}
+            onApplied={() => onDone(unify.tid, name.trim())}
+          />
         )}
 
         {step === 3 && preview && (

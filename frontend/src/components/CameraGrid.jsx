@@ -73,8 +73,7 @@ export default function CameraGrid({
         showRotate={
           anomalyPaths?.has(`${cam.seq}:${photo.rel_path}`) &&
           photo.rotation_override == null
-        }
-        onOpenOriginal={onOpenOriginal}
+        }        onOpenOriginal={onOpenOriginal}
         onRotate={onRotate}
         fit={fit}
       />
@@ -158,7 +157,9 @@ function PhotoTile({ tunnelId, photo, name, highlighted, view, onView, showRotat
     }
   }
 
-  const effAngle = (photo.rotation_override ?? photo.camera_rotation ?? 0) % 360
+  // 旋轉語義＝疊加：override 是相機旋轉之外的「相對修正」，
+  // 單張按鈕送出的新 override = 現有 override +90（不含相機角）
+  const nextOverride = ((photo.rotation_override ?? 0) + 90) % 360
 
   return (
     <div
@@ -200,7 +201,7 @@ function PhotoTile({ tunnelId, photo, name, highlighted, view, onView, showRotat
           title="比例異常——點擊旋轉 90°"
           onClick={(e) => {
             e.stopPropagation()
-            onRotate?.(photo.photo_id, (effAngle + 90) % 360)
+            onRotate?.(photo.photo_id, nextOverride)
           }}
         >⟳</button>
       )}

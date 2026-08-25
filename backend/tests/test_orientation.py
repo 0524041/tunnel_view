@@ -177,3 +177,59 @@ class TestUnifyEndpoint:
     def test_unify_rejects_bad_angle(self, env):
         r = env.post(f"/api/tunnels/{env.tid}/cameras/0/unify", json={"angle": 45})
         assert r.status_code == 400
+
+
+
+class TestRotationComposition:
+    """旋轉語義＝疊加：最終角度 = 相機旋轉 ＋ 單張轉正（mod 360）。
+
+    回歸：舊版渲染用 override ?? cam_rot（取代制），先單張轉正再轉整台
+    相機時，已轉正的照片不會跟著動，與比例異常判斷（疊加制）矛盾。
+    以串流像素尺寸驗證（40x30 橫式：90° 後應為 30x40、180° 後回到 40x30）。
+    """
+
+    def _first_pid(self, env):
+        groups = env.get(f"/api/tunnels/{env.tid}/groups", params={"around": 0, "before": 10, "after": 10}).json()
+        return next(p["photo_id"] for g in groups for p in g["photos"])
+
+    def _dims(self, env, pid):
+        import io
+
+        from PIL import Image
+
+        r = env.get(f"/api/tunnels/{env.tid}/photos/{pid}")
+        assert r.status_code == 200, r.status_code
+        return Image.open(io.BytesIO(r.content)).size
+
+    def test_override_then_camera_rotation_compose_additively(self, env):
+        tid = env.tid
+        pid = self._first_pid(env)
+        assert self._dims(env, pid) == (40, 30)  # 原圖橫式
+
+        r = env.put(f"/api/tunnels/{tid}/photos/{pid}/rotation", json={"angle": 90})
+        assert r.status_code == 200
+        assert self._dims(env, pid) == (30, 40)  # +90 → 直式
+
+        # 整台相機再轉 90：疊加制下有效角 180 → 回到橫式（取代制會停在 90）
+        r = env.put(f"/api/tunnels/{tid}/cameras/0", json={"rotation": 90})
+        assert r.status_code == 200
+        assert self._dims(env, pid) == (40, 30)
+
+        # 同相機未轉正的照片只吃相機旋轉
+        other = next(
+            p["photo_id"] for g in env.get(
+                f"/api/tunnels/{tid}/groups", params={"around": 0, "before": 10, "after": 10}
+            ).json() for p in g["photos"] if p["photo_id"] != pid and p["camera_seq"] == 0
+        )
+        assert self._dims(env, other) == (30, 40)
+
+
+class TestOrientationStatsEndpoint:
+    def test_get_stats_for_existing_tunnel(self, env):
+        r = env.get(f"/api/tunnels/{env.tid}/orientation-stats")
+        assert r.status_code == 200
+        by_name = {s["camera"]: s for s in r.json()}
+        assert by_name["左壁"]["landscape"] == 3
+        assert by_name["左壁"]["portrait"] == 2
+        assert by_name["左壁"]["minority"] == "portrait"
+        assert by_name["右壁"]["minority"] is None

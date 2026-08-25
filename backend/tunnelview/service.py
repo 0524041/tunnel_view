@@ -293,7 +293,10 @@ class TunnelService:
             conn.close()
         if row is None:
             raise KeyError(photo_id)
-        extra = row["ro"] if row["ro"] is not None else (row["cam_rot"] or 0)
+        # 旋轉語義＝疊加：最終額外角度 = 相機旋轉 ＋ 單張轉正（mod 360）。
+        # 舊版 override ?? cam_rot（取代制）會讓先轉正的照片在相機旋轉時不跟著動，
+        # 與 compute_aspect_anomalies / unify 的疊加判斷矛盾。
+        extra = int((row["cam_rot"] or 0) + (row["ro"] or 0)) % 360
         return {
             "path": Path(row["root_path"]) / row["rel_path"],
             "extra_rotation": int(extra or 0) % 360,
@@ -823,6 +826,16 @@ class TunnelService:
                 )
                 if cur.rowcount == 0:
                     raise KeyError(photo_id)
+        finally:
+            conn.close()
+
+    def orientation_stats(self, tunnel_id: int) -> list[dict]:
+        """既有隧道的各機位直/橫統計（供檢視器批次轉正入口）。"""
+        from .importer import orientation_stats as _stats
+
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            return _stats(conn)
         finally:
             conn.close()
 
