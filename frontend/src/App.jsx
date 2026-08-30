@@ -14,11 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import HomePage from './pages/HomePage'
 import WizardPage from './pages/WizardPage'
 import ViewerPage from './pages/ViewerPage'
+import HelpModal from './components/HelpModal'
+import OnboardingTour, { OnboardingWelcome, UpdateAnnouncement } from './components/OnboardingTour'
 import { onToast } from './lib/toast'
+import {
+  CURRENT_UPDATE,
+  TOUR_STEPS,
+  areUpdatesDisabled,
+  completeTour,
+  completeUpdate,
+  disableTours,
+  disableUpdates,
+  isTourComplete,
+  isTourDisabled,
+  isUpdateSeen,
+  resetTours,
+} from './lib/onboarding'
 import './styles/App.css'
 
 function ToastHost() {
@@ -43,6 +58,67 @@ function ToastHost() {
 export default function App() {
   const [tabs, setTabs] = useState([{ key: 'home' }])
   const [active, setActive] = useState('home')
+  const [theme, setTheme] = useState(() => localStorage.getItem('tv_theme') || 'dark')
+  const [tour, setTour] = useState(null)
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const autoTourAttempted = useRef(new Set())
+  const updatePrompted = useRef(false)
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const [updateTourOpen, setUpdateTourOpen] = useState(false)
+
+  const activeTab = tabs.find((tab) => tab.key === active)
+  const section = activeTab?.key === 'home' ? 'home' : activeTab?.key === 'wizard' ? 'wizard' : 'viewer'
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('tv_theme', theme)
+  }, [theme])
+
+  useEffect(() => {
+    if (!section || autoTourAttempted.current.has(section) || isTourDisabled() || isTourComplete(section)) return
+    const timer = window.setTimeout(() => {
+      autoTourAttempted.current.add(section)
+      if (section === 'home') setWelcomeOpen(true)
+      else setTour(section)
+    }, 150)
+    return () => window.clearTimeout(timer)
+  }, [section])
+
+  useEffect(() => {
+    if (!CURRENT_UPDATE || updatePrompted.current || areUpdatesDisabled() || isUpdateSeen(CURRENT_UPDATE)) return
+    updatePrompted.current = true
+    setUpdateOpen(true)
+  }, [])
+
+  const completeCurrentTour = () => {
+    if (tour) completeTour(tour)
+    setTour(null)
+  }
+
+  const skipCurrentTour = () => {
+    if (tour) completeTour(tour)
+    setTour(null)
+  }
+
+  const disableAllTours = () => {
+    disableTours()
+    setTour(null)
+    setWelcomeOpen(false)
+  }
+
+  const replayCurrentTour = () => {
+    setSettingsOpen(false)
+    setWelcomeOpen(false)
+    setTour(section)
+  }
+
+  const resetAllTours = () => {
+    resetTours()
+    autoTourAttempted.current.clear()
+    setSettingsOpen(false)
+  }
 
   const openTunnel = (tunnelId, name) => {
     const key = `t${tunnelId}`
@@ -95,6 +171,32 @@ export default function App() {
             )}
           </div>
         ))}
+        <div className="settings-wrap">
+          <div className="app-tools">
+            <button
+              type="button"
+              className="app-tool"
+              title={theme === 'dark' ? '切換至淺色主題' : '切換至深色主題'}
+              onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
+            >
+              {theme === 'dark' ? '☼' : '◐'} <span className="app-tool-label">{theme === 'dark' ? '淺色' : '深色'}</span>
+            </button>
+            <button type="button" className="app-tool" data-tour="app-help" title="目前頁面的詳細說明" onClick={() => setHelpOpen(true)}>?</button>
+            <button
+              type="button"
+              className={`app-tool ${settingsOpen ? 'on' : ''}`}
+              title="導覽設定"
+              onClick={() => setSettingsOpen((open) => !open)}
+            >⚙</button>
+          </div>
+          {settingsOpen && (
+            <div className="settings-menu">
+              <button type="button" onClick={replayCurrentTour}>重新播放目前頁面導覽</button>
+              <button type="button" onClick={resetAllTours}>重新啟用全部新手導覽</button>
+              <button type="button" onClick={disableAllTours}>關閉所有新手導覽</button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="tab-body">
@@ -112,6 +214,62 @@ export default function App() {
         ))}
       </div>
       <ToastHost />
+      {helpOpen && <HelpModal section={section} onClose={() => setHelpOpen(false)} />}
+      {welcomeOpen && (
+        <OnboardingWelcome
+          onStart={() => {
+            setWelcomeOpen(false)
+            setTour('home')
+          }}
+          onDismiss={() => setWelcomeOpen(false)}
+          onSkip={() => {
+            completeTour('home')
+            setWelcomeOpen(false)
+          }}
+          onDisable={disableAllTours}
+        />
+      )}
+      {tour && (
+        <OnboardingTour
+          key={tour}
+          steps={TOUR_STEPS[tour]}
+          onComplete={completeCurrentTour}
+          onDismiss={() => setTour(null)}
+          onSkip={skipCurrentTour}
+          onDisable={disableAllTours}
+        />
+      )}
+      {CURRENT_UPDATE && updateOpen && (
+        <UpdateAnnouncement
+          update={CURRENT_UPDATE}
+          onView={() => {
+            completeUpdate(CURRENT_UPDATE)
+            setUpdateOpen(false)
+            setUpdateTourOpen(true)
+          }}
+          onSkip={() => {
+            completeUpdate(CURRENT_UPDATE)
+            setUpdateOpen(false)
+          }}
+          onDisable={() => {
+            disableUpdates()
+            setUpdateOpen(false)
+          }}
+        />
+      )}
+      {CURRENT_UPDATE && updateTourOpen && (
+        <OnboardingTour
+          key={`update-${CURRENT_UPDATE.id}`}
+          steps={CURRENT_UPDATE.steps}
+          onComplete={() => setUpdateTourOpen(false)}
+          onDismiss={() => setUpdateTourOpen(false)}
+          onSkip={() => setUpdateTourOpen(false)}
+          onDisable={() => {
+            disableUpdates()
+            setUpdateTourOpen(false)
+          }}
+        />
+      )}
     </div>
   )
 }

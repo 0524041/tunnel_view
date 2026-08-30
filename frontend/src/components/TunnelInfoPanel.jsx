@@ -22,13 +22,14 @@ import LayoutEditor from './LayoutEditor'
 
 const ROT_OPTIONS = [0, 90, 180, 270]
 
-export default function TunnelInfoPanel({ tunnelId, info, onChanged, currentGroupCount = 0 }) {
+export default function TunnelInfoPanel({ tunnelId, info, onChanged, onTitle, currentGroupCount = 0 }) {
   const [tab, setTab] = useState('report')
   const [tolerance, setTolerance] = useState(null)
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [renaming, setRenaming] = useState(null)
+  const [renamingTunnel, setRenamingTunnel] = useState(false)
 
   const [camThumbs, setCamThumbs] = useState({})
   useEffect(() => {
@@ -71,6 +72,20 @@ export default function TunnelInfoPanel({ tunnelId, info, onChanged, currentGrou
     try {
       await api.setCameraName(tunnelId, seq, trimmed)
       toast('已改名')
+      onChanged?.()
+    } catch (e) {
+      toast(e.message, 'err')
+    }
+  }
+
+  const commitTunnelRename = async (name) => {
+    setRenamingTunnel(false)
+    const trimmed = name?.trim()
+    if (!trimmed || trimmed === info.name) return
+    try {
+      await api.renameTunnel(tunnelId, trimmed)
+      onTitle?.(trimmed)
+      toast('隧道已改名')
       onChanged?.()
     } catch (e) {
       toast(e.message, 'err')
@@ -120,6 +135,26 @@ export default function TunnelInfoPanel({ tunnelId, info, onChanged, currentGrou
         {tab === 'report' && (
           <>
             <Section title="匯入報告">
+              <div className="panel cam-rename-row" style={{ marginBottom: 10 }}>
+                <span className="label">隧道名稱</span>
+                {renamingTunnel ? (
+                  <input
+                    className="field"
+                    autoFocus
+                    defaultValue={info.name}
+                    onBlur={(e) => commitTunnelRename(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitTunnelRename(e.target.value)
+                      if (e.key === 'Escape') setRenamingTunnel(false)
+                    }}
+                  />
+                ) : (
+                  <>
+                    <span className="list-main">{info.name}</span>
+                    <button type="button" className="btn small ghost" title="重新命名隧道" onClick={() => setRenamingTunnel(true)}>✎</button>
+                  </>
+                )}
+              </div>
               <div className="kv mono">
                 <span>容差</span><b>{report.tolerance_seconds ?? '—'}s</b>
                 <span>群組數</span><b>{report.group_count ?? '—'}</b>
@@ -209,6 +244,25 @@ export default function TunnelInfoPanel({ tunnelId, info, onChanged, currentGrou
                     >↩ 復原</button>
                   </div>
                 ))}
+              </Section>
+            )}
+
+            {(info.hidden_groups || []).length > 0 && (
+              <Section title={`已隱藏群組 · ${info.hidden_groups.length}`}>
+                {info.hidden_groups.map((g) => (
+                  <div key={g.seq} className="panel flag-card">
+                    <div className="mono list-main">群組 #{String(g.seq + 1).padStart(4, '0')}</div>
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() => api.setGroupHidden(tunnelId, g.seq, false).then(() => {
+                        toast('群組已恢復並重新納入里程計算')
+                        onChanged?.()
+                      }).catch((e) => toast(e.message, 'err'))}
+                    >↩ 恢復</button>
+                  </div>
+                ))}
+                <p className="hint">隱藏只影響模型顯示與里程計算，不會變更來源照片檔。</p>
               </Section>
             )}
 

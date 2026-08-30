@@ -92,14 +92,14 @@
 .tile::before {
   top: 4px;
   right: 4px;
-  border-top: 1.5px solid var(--amber);
-  border-right: 1.5px solid var(--amber);
+  border-top: 1.5px solid var(--image-accent);
+  border-right: 1.5px solid var(--image-accent);
 }
 .tile::after {
   bottom: 4px;
   left: 4px;
-  border-bottom: 1.5px solid var(--amber);
-  border-left: 1.5px solid var(--amber);
+  border-bottom: 1.5px solid var(--image-accent);
+  border-left: 1.5px solid var(--image-accent);
 }
 
 .tile-img {
@@ -297,6 +297,60 @@
   font-size: 0.6875rem;
   color: var(--text);
 }
+.rail-snap {
+  position: absolute;
+  top: 0;
+  z-index: 3;
+  max-width: 92px;
+  padding: 1px 4px;
+  color: var(--text-hi);
+  font-size: 0.625rem;
+  line-height: 1.25;
+  text-align: center;
+  white-space: nowrap;
+  background: var(--bg2);
+  border: 1px solid var(--rail-current);
+  border-radius: 3px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.rail-marker-picker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 90;
+  display: grid;
+  width: 260px;
+  max-height: min(280px, 45dvh);
+  padding: 8px;
+  overflow-y: auto;
+  background: var(--bg2);
+  border: 1px solid var(--line-strong);
+  border-top: 2px solid var(--rail-current);
+  border-radius: 6px;
+  box-shadow: var(--shadow-pop);
+  transform: translateX(-50%);
+}
+.rail-marker-picker .label {
+  margin: 0 0 4px;
+}
+.rail-marker-picker button {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  text-align: left;
+  border-radius: 4px;
+}
+.rail-marker-picker button:hover {
+  background: var(--bg3);
+}
+.rail-marker-picker b {
+  color: var(--rail-current);
+  font-size: 0.75rem;
+}
+.rail-marker-picker span {
+  color: var(--text);
+  font-size: 0.6875rem;
+}
 
 .vhint {
   flex: none;
@@ -393,16 +447,16 @@ kbd {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: var(--amber-soft);
-  border: 1px solid var(--amber);
-  color: var(--amber);
+  background: var(--image-accent-soft);
+  border: 1px solid var(--image-accent);
+  color: var(--image-accent);
   font-size: 1rem;
   display: grid;
   place-items: center;
   backdrop-filter: blur(2px);
 }
 .rotate-btn:hover {
-  background: rgba(255, 179, 0, 0.3);
+  background: var(--image-accent-soft);
 }
 
 .review-overlay {
@@ -516,7 +570,7 @@ kbd {
   width: 7px;
   height: 7px;
   display: inline-block;
-  background: #ffb300;
+  background: var(--rail-aspect);
   transform: rotate(45deg);
 }
 
@@ -612,7 +666,7 @@ kbd {
   outline: 1px dashed var(--line-strong);
 }
 .le-cell.filled { outline-style: solid; background: #000; }
-.le-cell.selected { outline: 2px solid var(--amber); }
+.le-cell.selected { outline: 2px solid var(--image-accent); }
 .le-cell img {
   position: absolute;
   inset: 0;
@@ -628,8 +682,8 @@ kbd {
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(0,0,0,0.65);
-  color: var(--amber);
-  border: 1px solid rgba(255,179,0,0.4);
+  color: var(--image-accent);
+  border: 1px solid var(--image-accent);
 }
 .le-cards {
   margin-top: 12px;

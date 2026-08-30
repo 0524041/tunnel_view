@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 # 全工作區共用的異狀類型（跨隧道專案）
 BUILTIN_DEFECT_TYPES = ("裂縫", "滲漏水", "剝落", "白華", "鋼筋外露")
@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS photo_groups (
     seq INTEGER NOT NULL UNIQUE,
     corrected_time TEXT NOT NULL,
     est_mileage_m INTEGER NOT NULL,
-    missing_count INTEGER NOT NULL DEFAULT 0
+    missing_count INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_groups_mileage ON photo_groups(est_mileage_m);
 
@@ -190,6 +191,12 @@ def migrate_if_needed(conn: sqlite3.Connection) -> None:
             if "pixel_version" not in photo_cols3:
                 conn.execute(
                     "ALTER TABLE photos ADD COLUMN pixel_version INTEGER NOT NULL DEFAULT 0"
+                )
+            group_cols = {r[1] for r in conn.execute("PRAGMA table_info(photo_groups)")}
+            if "hidden" not in group_cols:
+                conn.execute(
+                    "ALTER TABLE photo_groups ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (hidden IN (0, 1))"
                 )
             conn.execute(_ANOMALIES_DDL)
             conn.execute(
@@ -526,6 +533,20 @@ class Workspace:
         row = self._tunnel_row(tunnel_id)
         with self._connect(self.root / row["db_filename"]) as tconn:
             return dict(tconn.execute("SELECT key, value FROM meta").fetchall())
+
+    def rename_tunnel(self, tunnel_id: int, name: str) -> None:
+        name = name.strip()
+        if not name:
+            raise ValueError("隧道名稱不可空白")
+        row = self._tunnel_row(tunnel_id)
+        with self._lock, self._connect(self.root / row["db_filename"]) as tconn:
+            tconn.execute(
+                "INSERT INTO meta (key, value) VALUES ('tunnel_name', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (name,),
+            )
+        with self._connect(self.index_path) as conn:
+            conn.execute("UPDATE tunnels SET name = ? WHERE id = ?", (name, tunnel_id))
 
     def delete_tunnel(self, tunnel_id: int) -> None:
         """刪除隧道：移除索引列並刪除 .db／-wal／-shm 檔。照片原檔不動。"""

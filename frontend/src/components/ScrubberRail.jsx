@@ -17,7 +17,27 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtMileage, pickStep, clampView, zoomView, followCurrent, idxToX, xToIdx, mileageToIdx } from '../lib/scrubberMath.js'
 
-const ANOMALY_COLOR = '#e857a0'
+const SNAP_DISTANCE = 14
+const CLUSTER_DISTANCE = 12
+const MARKER_LABELS = {
+  anchor: '錨點',
+  missing: '缺照',
+  aspect: '比例異常',
+  defect: '異狀',
+}
+
+function railColors() {
+  const styles = getComputedStyle(document.documentElement)
+  const get = (name) => styles.getPropertyValue(name).trim()
+  return {
+    wall: get('--rail-wall'), tick: get('--rail-tick'), minorTick: get('--rail-minor-tick'),
+    labelBg: get('--rail-label-bg'), labelBorder: get('--rail-label-border'), labelText: get('--rail-label-text'),
+    start: get('--rail-start'), end: get('--rail-end'), joint: get('--rail-joint'), anchor: get('--rail-anchor'),
+    anchorOutline: get('--rail-anchor-outline'), missing: get('--rail-missing'), aspect: get('--rail-aspect'),
+    anomaly: get('--rail-anomaly'), current: get('--rail-current'), currentGlow: get('--rail-current-glow'),
+    currentFill: get('--rail-current-fill'), currentBorder: get('--rail-current-border'),
+  }
+}
 
 export default function ScrubberRail({
   tunnelId,
@@ -37,27 +57,70 @@ export default function ScrubberRail({
   const canvasRef = useRef(null)
   const wrapRef = useRef(null)
   const n = est?.length ?? 0
+  const legendColors = railColors()
   const [view, setView] = useState([0, Math.min(n, 60)])
   const viewRef = useRef(view)
   viewRef.current = n ? clampView(view[0], view[1], n) : view
   const dragRef = useRef(null)
   const sizeRef = useRef({ w: 0, h: 0 })
-  const hitRef = useRef([])
+  const markerRef = useRef([])
   const [tip, setTip] = useState(null)
+  const [snapped, setSnapped] = useState(null)
+  const [picker, setPicker] = useState(null)
+  const [hideAnchors, setHideAnchors] = useState(() => localStorage.getItem('tv_hide_anchor_marks') === '1')
   const [hideMissing, setHideMissing] = useState(() => localStorage.getItem('tv_hide_missing_marks') === '1')
-  const [hideAnomaly, setHideAnomaly] = useState(() => localStorage.getItem('tv_hide_anomaly') === '1')
-  const findHit = (px) => hitRef.current.find((h) => Math.abs(h.x - px) <= 6)
+  const [hideAspect, setHideAspect] = useState(() => localStorage.getItem('tv_hide_aspect_marks') === '1')
+  const [hideDefects, setHideDefects] = useState(() => localStorage.getItem('tv_hide_anomaly_marks') === '1' || localStorage.getItem('tv_hide_anomaly') === '1')
+  const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem('tv_marker_snap') !== '0')
+  const findNearestMarker = (px, maxDistance = SNAP_DISTANCE) => {
+    let nearest = null
+    for (const marker of markerRef.current) {
+      const distance = Math.abs(marker.x - px)
+      if (distance > maxDistance || (nearest && distance >= nearest.distance)) continue
+      nearest = { ...marker, distance }
+    }
+    return nearest
+  }
+  const clearPicker = () => setPicker(null)
+  const clearMarkerUi = () => {
+    setPicker(null)
+    setSnapped(null)
+    setTip(null)
+  }
+  const toggleAnchors = () => {
+    setHideAnchors((v) => {
+      localStorage.setItem('tv_hide_anchor_marks', v ? '0' : '1')
+      return !v
+    })
+    clearMarkerUi()
+  }
   const toggleMissing = () => {
     setHideMissing((v) => {
       localStorage.setItem('tv_hide_missing_marks', v ? '0' : '1')
       return !v
     })
+    clearMarkerUi()
   }
-  const toggleAnomaly = () => {
-    setHideAnomaly((v) => {
-      localStorage.setItem('tv_hide_anomaly', v ? '0' : '1')
+  const toggleAspect = () => {
+    setHideAspect((v) => {
+      localStorage.setItem('tv_hide_aspect_marks', v ? '0' : '1')
       return !v
     })
+    clearMarkerUi()
+  }
+  const toggleDefects = () => {
+    setHideDefects((v) => {
+      localStorage.setItem('tv_hide_anomaly_marks', v ? '0' : '1')
+      return !v
+    })
+    clearMarkerUi()
+  }
+  const toggleSnap = () => {
+    setSnapEnabled((v) => {
+      localStorage.setItem('tv_marker_snap', v ? '0' : '1')
+      return !v
+    })
+    clearMarkerUi()
   }
 
   // 檢視窗狀態與資料長度同步（n 變動時夾回合法範圍）
@@ -114,6 +177,7 @@ export default function ScrubberRail({
     canvas.style.width = `${W}px`
     canvas.style.height = `${H}px`
     const ctx = canvas.getContext('2d')
+    const colors = railColors()
     ctx.scale(dpr, dpr)
     ctx.clearRect(0, 0, W, H)
 
@@ -135,7 +199,7 @@ export default function ScrubberRail({
     const lastM = sortedEnd
 
     // ── 孔腔雙壁（隧道斷面意象：兩條壁線夾出通道）──
-    ctx.strokeStyle = 'rgba(154,163,173,0.38)'
+    ctx.strokeStyle = colors.wall
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(PAD - 6, boreTopY + 0.5)
@@ -152,7 +216,7 @@ export default function ScrubberRail({
       if (x < PAD - 2 || x > W - PAD + 2) continue
       const isMajor = Math.abs(m % step) < 1e-6 || Math.abs((m % step) - step) < 1e-6
       // 枕木：貫穿雙壁之間的短橫木
-      ctx.strokeStyle = isMajor ? 'rgba(200,208,216,0.55)' : 'rgba(154,163,173,0.22)'
+      ctx.strokeStyle = isMajor ? colors.tick : colors.minorTick
       ctx.lineWidth = isMajor ? 1.5 : 1
       ctx.beginPath()
       ctx.moveTo(x + 0.5, boreTopY + (isMajor ? 0 : 3))
@@ -162,14 +226,14 @@ export default function ScrubberRail({
         // 樁號牌：壁上方的小圓角標籤
         const label = fmtMileage(Math.round(m))
         const tw = ctx.measureText(label).width
-        ctx.fillStyle = 'rgba(23,27,33,0.9)'
+        ctx.fillStyle = colors.labelBg
         ctx.beginPath()
         ctx.roundRect(x - tw / 2 - 4, labelPlateY, tw + 8, 13, 3)
         ctx.fill()
-        ctx.strokeStyle = 'rgba(154,163,173,0.35)'
+        ctx.strokeStyle = colors.labelBorder
         ctx.lineWidth = 1
         ctx.stroke()
-        ctx.fillStyle = 'rgba(178,186,194,0.95)'
+        ctx.fillStyle = colors.labelText
         ctx.fillText(label, x, labelPlateY + 10)
       }
     }
@@ -179,37 +243,40 @@ export default function ScrubberRail({
     const xEnd = mileageToX(sortedEnd, W)
     ctx.font = '600 10px "IBM Plex Mono", monospace'
     if (xStart >= PAD - 2 && xStart <= W - PAD + 2) {
-      ctx.fillStyle = 'rgba(120,200,120,0.85)'
+      ctx.fillStyle = colors.start
       ctx.textAlign = 'left'
       ctx.fillText('▶ ' + fmtMileage(sortedStart), Math.max(PAD - 8, xStart + 5), boreBotY + 10)
     }
     if (xEnd >= PAD - 2 && xEnd <= W - PAD + 2) {
-      ctx.fillStyle = 'rgba(232,87,87,0.85)'
+      ctx.fillStyle = colors.end
       ctx.textAlign = 'right'
       ctx.fillText(fmtMileage(sortedEnd) + ' ◀', Math.min(W - PAD + 8, xEnd - 5), boreBotY + 10)
     }
 
     // ── 上層：襯砌環片點位 ──
-    const hits = []
+    const markers = []
     const ringJointEvery = Math.max(1, Math.round((v1 - v0) / 80))
     for (let i = Math.max(0, Math.ceil(v0)); i < Math.min(n, v1 + 1); i++) {
       const x = idxToX(toDispIdx(i), ...dispPair(), W, PAD)
       const isRingJoint = i % ringJointEvery === 0
-      ctx.fillStyle = isRingJoint ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.28)'
+      ctx.fillStyle = colors.joint
       ctx.fillRect(x - 0.5, isRingJoint ? 6 : 8, 1, isRingJoint ? 10 : 8)
-      if (anchored[i]) {
-        ctx.fillStyle = '#4fa3ff'
+      const types = []
+      if (!hideAnchors && anchored[i]) {
+        ctx.fillStyle = colors.anchor
         ctx.fillRect(x - 4, 3, 8, 7)
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)'
+        ctx.strokeStyle = colors.anchorOutline
         ctx.lineWidth = 1
         ctx.strokeRect(x - 3.5, 3.5, 7, 6)
+        types.push('anchor')
       }
       if (!hideMissing && missing[i] > 0) {
-        ctx.fillStyle = '#ff4d4f'
+        ctx.fillStyle = colors.missing
         ctx.fillRect(x - 1.25, 10, 2.5, 9)
+        types.push('missing')
       }
-      if (anomaly?.[i] > 0) {
-        ctx.fillStyle = hideAnomaly ? 'rgba(255,179,0,0.18)' : '#ffb300'
+      if (!hideAspect && anomaly?.[i] > 0) {
+        ctx.fillStyle = colors.aspect
         ctx.beginPath()
         ctx.moveTo(x, 19)
         ctx.lineTo(x - 4, 24)
@@ -217,39 +284,41 @@ export default function ScrubberRail({
         ctx.lineTo(x + 4, 24)
         ctx.closePath()
         ctx.fill()
+        types.push('aspect')
       }
       if (ano?.[i] > 0) {
-        if (!hideAnomaly) {
-          ctx.fillStyle = ANOMALY_COLOR
+        if (!hideDefects) {
+          ctx.fillStyle = colors.anomaly
           const w = ano[i] > 1 ? 5 : 3
           ctx.beginPath()
           ctx.roundRect(x - w / 2, 6, w, 7, 1.5)
           ctx.fill()
+          types.push('defect')
         }
-        hits.push({ x, seq: i })
       }
+      if (types.length) markers.push({ x, seq: i, types })
     }
-    hitRef.current = hits
+    markerRef.current = markers
 
     // ── 當前位置：頭燈光束＋游標 ──
     if (current >= v0 && current <= v1) {
       const x = idxToX(toDispIdx(current), ...dispPair(), W, PAD)
       const glow = ctx.createLinearGradient(x, 0, x, H)
-      glow.addColorStop(0, 'rgba(255,179,0,0.22)')
-      glow.addColorStop(1, 'rgba(255,179,0,0.04)')
+      glow.addColorStop(0, colors.currentGlow)
+      glow.addColorStop(1, 'transparent')
       ctx.strokeStyle = glow
       ctx.lineWidth = 6
       ctx.beginPath()
       ctx.moveTo(x, 2)
       ctx.lineTo(x, boreBotY - 2)
       ctx.stroke()
-      ctx.strokeStyle = '#ffb300'
+      ctx.strokeStyle = colors.current
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.moveTo(x, 2)
       ctx.lineTo(x, boreBotY)
       ctx.stroke()
-      ctx.fillStyle = '#ffb300'
+      ctx.fillStyle = colors.current
       ctx.beginPath()
       ctx.moveTo(x - 5, boreBotY - 1)
       ctx.lineTo(x + 5, boreBotY - 1)
@@ -261,16 +330,16 @@ export default function ScrubberRail({
       ctx.font = '600 11px "IBM Plex Mono", monospace'
       const tw = ctx.measureText(label).width
       const bx = Math.min(Math.max(x - tw / 2 - 8, PAD - 8), W - PAD + 8 - tw - 16)
-      ctx.fillStyle = 'rgba(255,179,0,0.16)'
+      ctx.fillStyle = colors.currentFill
       ctx.beginPath()
       ctx.roundRect(bx, 1, tw + 16, 17, 8)
       ctx.fill()
-      ctx.strokeStyle = 'rgba(255,179,0,0.55)'
+      ctx.strokeStyle = colors.currentBorder
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.roundRect(bx + 0.5, 1.5, tw + 15, 16, 8)
       ctx.stroke()
-      ctx.fillStyle = '#ffb300'
+      ctx.fillStyle = colors.current
       ctx.textAlign = 'center'
       ctx.fillText(label, bx + tw / 2 + 8, 13)
     }
@@ -295,6 +364,7 @@ export default function ScrubberRail({
   }, [n, isReversed])
 
   const onPointerDown = (e) => {
+    clearPicker()
     e.currentTarget.setPointerCapture(e.pointerId)
     dragRef.current = { x: e.clientX, moved: false, start: viewRef.current, w: sizeRef.current.w }
   }
@@ -303,8 +373,12 @@ export default function ScrubberRail({
     const d = dragRef.current
     if (!d) {
       const rect = wrapRef.current.getBoundingClientRect()
-      const hit = findHit(e.clientX - rect.left)
-      setTip(hit ? { ...hit, px: e.clientX - rect.left } : null)
+      const px = e.clientX - rect.left
+      const nearest = findNearestMarker(px)
+      const activeSnap = snapEnabled ? nearest : null
+      const tipMarker = activeSnap || findNearestMarker(px, 6)
+      setSnapped(activeSnap)
+      setTip(tipMarker?.types.includes('defect') ? { ...tipMarker, px: tipMarker.x } : null)
       return
     }
     const dx = e.clientX - d.x
@@ -321,20 +395,33 @@ export default function ScrubberRail({
     if (!d || d.moved) return
     const rect = wrapRef.current.getBoundingClientRect()
     const px = e.clientX - rect.left
-    // 點擊異狀標記優先跳轉
-    const hit = findHit(px)
+    const snappedMarker = snapEnabled ? findNearestMarker(px) : null
+    if (snappedMarker) {
+      const choices = markerRef.current.filter((marker) => Math.abs(marker.x - snappedMarker.x) <= CLUSTER_DISTANCE)
+      if (choices.length > 1) {
+        setPicker({ x: snappedMarker.x, choices })
+      } else {
+        onJump(snappedMarker.seq)
+      }
+      return
+    }
     const [dv0, dv1] = isReversed ? [n - 1 - d.start[1], n - 1 - d.start[0]] : d.start
     const dispIdx = xToIdx(px, dv0, dv1, d.w, PAD)
     const idx = Math.max(0, Math.min(n - 1, Math.round(fromDispIdx(dispIdx))))
-    onJump(hit ? hit.seq : idx)
+    onJump(idx)
   }
 
   const tipData = tip ? anomsBySeq?.[tip.seq] : null
 
   return (
-    <div className="rail-block">
-      <div className="rail-wrap" ref={wrapRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => setTip(null)}>
+    <div className="rail-block" data-tour="viewer-rail">
+      <div className="rail-wrap" ref={wrapRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => { setTip(null); setSnapped(null) }}>
         <canvas ref={canvasRef} />
+        {snapped && (
+          <div className="rail-snap" style={{ left: snapped.x }}>
+            {snapped.types.map((type) => MARKER_LABELS[type]).join('、')}
+          </div>
+        )}
         {tip && tipData && (
           <div className="rail-tip" style={{ left: Math.min(Math.max(tip.px, 120), (sizeRef.current.w || 400) - 130) }}>
             <img src={`/api/tunnels/${tunnelId}/photos/${tipData.photo_id}?w=240`} alt="" />
@@ -344,17 +431,35 @@ export default function ScrubberRail({
             </div>
           </div>
         )}
+        {picker && (
+          <div className="rail-marker-picker" style={{ left: Math.min(Math.max(picker.x, 130), (sizeRef.current.w || 400) - 150) }} onPointerDown={(e) => e.stopPropagation()}>
+            <span className="label">選擇標記</span>
+            {picker.choices.map((marker) => (
+              <button key={marker.seq} type="button" onClick={() => { onJump(marker.seq); clearPicker() }}>
+                <b className="mono">{fmtMileage(est[marker.seq] ?? 0)}</b>
+                <span>群組 #{String(marker.seq + 1).padStart(4, '0')} · {marker.types.map((type) => MARKER_LABELS[type]).join('、')}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <div className="rail-legend">
-        <span style={{ opacity: 1 }}><i style={{ background: '#4fa3ff' }} /> 錨點</span>
+        <button type="button" className={`chip ${hideAnchors ? 'ghost' : ''}`} onClick={toggleAnchors} title="隱藏/顯示錨點標記" style={{ opacity: hideAnchors ? 0.45 : 1 }}>
+          <i style={{ background: legendColors.anchor }} /> 錨點 {hideAnchors ? '◯' : '👁'}
+        </button>
         <button type="button" className={`chip ${hideMissing ? 'ghost' : ''}`} onClick={toggleMissing} title="隱藏/顯示缺照標記（僅里程條）" style={{ opacity: hideMissing ? 0.45 : 1 }}>
-          <i style={{ background: '#ff4d4f' }} /> 缺照 {hideMissing ? '◯' : '👁'}
+          <i style={{ background: legendColors.missing }} /> 缺照 {hideMissing ? '◯' : '👁'}
         </button>
-        <span><i className="legend-diamond" /> 比例異常</span>
-        <button type="button" className={`chip ${hideAnomaly ? 'ghost' : ''}`} onClick={toggleAnomaly} title="隱藏/顯示異常" style={{ opacity: hideAnomaly ? 0.45 : 1 }}>
-          <i style={{ background: ANOMALY_COLOR }} /> 異狀 {hideAnomaly ? '◯' : '👁'}
+        <button type="button" className={`chip ${hideAspect ? 'ghost' : ''}`} onClick={toggleAspect} title="隱藏/顯示比例異常標記" style={{ opacity: hideAspect ? 0.45 : 1 }}>
+          <i className="legend-diamond" /> 比例異常 {hideAspect ? '◯' : '👁'}
         </button>
-        <span><i style={{ background: '#ffb300', height: 2 }} /> 當前位置</span>
+        <button type="button" className={`chip ${hideDefects ? 'ghost' : ''}`} onClick={toggleDefects} title="隱藏/顯示異狀標記" style={{ opacity: hideDefects ? 0.45 : 1 }}>
+          <i style={{ background: legendColors.anomaly }} /> 異狀 {hideDefects ? '◯' : '👁'}
+        </button>
+        <span><i style={{ background: legendColors.current, height: 2 }} /> 當前位置</span>
+        <button type="button" className={`chip ${snapEnabled ? 'amber' : 'ghost'}`} onClick={toggleSnap} title="開啟時，游標會吸附至最近的可見標記">
+          ◎ 吸附 {snapEnabled ? '開' : '關'}
+        </button>
         <em className="hint rail-shortcuts">←/→ 群組 · Enter 錨點 · M 合併邊界 · Home/End · Ctrl+G 跳轉 · 點照片開原圖 · 滾輪縮放/拖曳 · 上層環片點位／下層孔腔里程</em>
         <span className="vspacer" />
         <button type="button" className="btn small ghost rail-help" title="說明與快捷鍵" onClick={() => onOpenHelp?.()}>?</button>

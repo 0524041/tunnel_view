@@ -55,7 +55,9 @@ class TunnelService:
         m = self.ws.tunnel_meta(tunnel_id)
         conn = self.ws.open_tunnel(tunnel_id)
         try:
-            count = conn.execute("SELECT COUNT(*) AS n FROM photo_groups").fetchone()["n"]
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM photo_groups WHERE hidden = 0"
+            ).fetchone()["n"]
         finally:
             conn.close()
         return {
@@ -67,11 +69,21 @@ class TunnelService:
 
     def _resolved_anchors(self, conn) -> dict[int, int]:
         """seq → mileage（排除失準者）。"""
+        visible = set(self._visible_group_seqs(conn))
         return {
             a["group_seq"]: a["mileage_m"]
             for a in list_anchors_resolved(conn)
-            if not a["dangling"] and a["group_seq"] is not None
+            if not a["dangling"] and a["group_seq"] in visible
         }
+
+    @staticmethod
+    def _visible_group_seqs(conn) -> list[int]:
+        return [
+            r["seq"]
+            for r in conn.execute(
+                "SELECT seq FROM photo_groups WHERE hidden = 0 ORDER BY seq"
+            ).fetchall()
+        ]
 
     def overview(self, tunnel_id: int) -> dict:
         """全線概觀（導航軌用）：緊湊陣列，數千群組也只傳一次。"""
@@ -85,7 +97,7 @@ class TunnelService:
                 for r in conn.execute(
                     "SELECT g.seq AS seq, COUNT(*) AS n FROM photos p "
                     "JOIN photo_groups g ON g.id = p.group_id "
-                    "WHERE p.aspect_anomaly = 1 AND COALESCE(p.manual_missing, 0) = 0 "
+                    "WHERE g.hidden = 0 AND p.aspect_anomaly = 1 AND COALESCE(p.manual_missing, 0) = 0 "
                     "GROUP BY g.seq"
                 ).fetchall()
             }
@@ -96,12 +108,12 @@ class TunnelService:
                     "FROM photo_anomalies pa "
                     "JOIN photos p ON p.id = pa.photo_id "
                     "JOIN photo_groups g ON g.id = p.group_id "
-                    "WHERE COALESCE(p.manual_missing, 0) = 0 "
+                    "WHERE g.hidden = 0 AND COALESCE(p.manual_missing, 0) = 0 "
                     "GROUP BY g.seq"
                 ).fetchall()
             }
             rows = conn.execute(
-                "SELECT seq, est_mileage_m, missing_count FROM photo_groups ORDER BY seq"
+                "SELECT seq, est_mileage_m, missing_count FROM photo_groups WHERE hidden = 0 ORDER BY seq"
             ).fetchall()
         finally:
             conn.close()
@@ -123,11 +135,18 @@ class TunnelService:
         }
 
     def get_window(self, tunnel_id: int, around: int, before: int, after: int) -> list[dict]:
-        lo = max(around - before, 0)
-        hi = around + after
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             anchored = set(self._resolved_anchors(conn))
+            seqs = self._visible_group_seqs(conn)
+            if not seqs:
+                return []
+            try:
+                pos = seqs.index(around)
+            except ValueError:
+                pos = min(range(len(seqs)), key=lambda i: abs(seqs[i] - around))
+            selected = seqs[max(pos - before, 0):pos + after + 1]
+            qmarks = ",".join("?" * len(selected))
             # 單一 JOIN 取回視窗內群組＋照片（R9：取代每群一查的 N+1）
             rows = conn.execute(
                 "SELECT g.id AS gid, g.seq AS gseq, g.corrected_time AS gtime, "
@@ -141,8 +160,8 @@ class TunnelService:
                 "FROM photo_groups g "
                 "LEFT JOIN photos p ON p.group_id = g.id AND COALESCE(p.manual_missing, 0) = 0 "
                 "LEFT JOIN cameras c ON c.id = p.camera_id "
-                "WHERE g.seq BETWEEN ? AND ? ORDER BY g.seq, c.seq",
-                (lo, hi),
+                f"WHERE g.seq IN ({qmarks}) ORDER BY g.seq, c.seq",
+                selected,
             ).fetchall()
             type_names = self._type_names()
             pids = [r["photo_id"] for r in rows if r["photo_id"] is not None]
@@ -201,7 +220,8 @@ class TunnelService:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             row = conn.execute(
-                "SELECT seq, est_mileage_m FROM photo_groups ORDER BY ABS(est_mileage_m - ?), seq LIMIT 1",
+                "SELECT seq, est_mileage_m FROM photo_groups WHERE hidden = 0 "
+                "ORDER BY ABS(est_mileage_m - ?), seq LIMIT 1",
                 (mileage_m,),
             ).fetchone()
             return {"seq": row["seq"], "est_mileage_m": row["est_mileage_m"]} if row else None
@@ -212,11 +232,12 @@ class TunnelService:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             resolved = list_anchors_resolved(conn)
+            visible = set(self._visible_group_seqs(conn))
         finally:
             conn.close()
         out = []
         for a in resolved:
-            if a["group_seq"] is None or a["dangling"]:
+            if a["group_seq"] not in visible or a["dangling"]:
                 continue
             out.append({"group_seq": a["group_seq"], "mileage_m": a["mileage_m"]})
         out.sort(key=lambda x: x["group_seq"])
@@ -224,28 +245,30 @@ class TunnelService:
 
     def set_anchor(self, tunnel_id: int, seq: int, mileage_m: int) -> None:
         """寫入／覆寫錨點並全線重算。違反單調或範圍時丟出例外，不寫入。"""
-        info = self.meta(tunnel_id)
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             with conn:
+                seqs = self._visible_group_seqs(conn)
+                if seq not in seqs:
+                    raise KeyError(seq)
                 existing = self._resolved_anchors(conn)
+                positions = {group_seq: i for i, group_seq in enumerate(seqs)}
                 check_anchor(
-                    seq,
+                    positions[seq],
                     mileage_m,
-                    group_count=info["group_count"],
-                    start_m=info["start_m"],
-                    end_m=info["end_m"],
-                    anchors=existing,
+                    group_count=len(seqs),
+                    start_m=int(self.ws.tunnel_meta(tunnel_id)["start_m"]),
+                    end_m=int(self.ws.tunnel_meta(tunnel_id)["end_m"]),
+                    anchors={positions[s]: m for s, m in existing.items()},
                 )
                 if set_anchor_on_group(conn, group_seq=seq, mileage_m=mileage_m) is None:
                     raise ValueError(f"群組 {seq} 沒有影像可作為錨點載體")
                 existing[seq] = mileage_m
-                self._recompute(conn, group_count=info["group_count"], start_m=info["start_m"], end_m=info["end_m"], anchors=existing)
+                self._recompute(conn, group_seqs=seqs, start_m=int(self.ws.tunnel_meta(tunnel_id)["start_m"]), end_m=int(self.ws.tunnel_meta(tunnel_id)["end_m"]), anchors=existing)
         finally:
             conn.close()
 
     def delete_anchor(self, tunnel_id: int, seq: int) -> None:
-        info = self.meta(tunnel_id)
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             with conn:
@@ -254,7 +277,8 @@ class TunnelService:
                     raise KeyError(seq)
                 conn.execute("DELETE FROM anchors WHERE carrier_photo_id = ?", (target["_pid"],))
                 existing = self._resolved_anchors(conn)
-                self._recompute(conn, group_count=info["group_count"], start_m=info["start_m"], end_m=info["end_m"], anchors=existing)
+                meta = self.ws.tunnel_meta(tunnel_id)
+                self._recompute(conn, group_seqs=self._visible_group_seqs(conn), start_m=int(meta["start_m"]), end_m=int(meta["end_m"]), anchors=existing)
         finally:
             conn.close()
 
@@ -345,12 +369,41 @@ class TunnelService:
             conn.close()
 
     @staticmethod
-    def _recompute(conn, *, group_count: int, start_m: int, end_m: int, anchors: dict[int, int]) -> None:
-        est = compute_all(group_count=group_count, start_m=start_m, end_m=end_m, anchors=anchors)
+    def _recompute(conn, *, group_seqs: list[int], start_m: int, end_m: int, anchors: dict[int, int]) -> None:
+        if not group_seqs:
+            return
+        positions = {seq: i for i, seq in enumerate(group_seqs)}
+        est = compute_all(
+            group_count=len(group_seqs),
+            start_m=start_m,
+            end_m=end_m,
+            anchors={positions[seq]: mileage for seq, mileage in anchors.items()},
+        )
         conn.executemany(
             "UPDATE photo_groups SET est_mileage_m = ? WHERE seq = ?",
-            [(m, s) for s, m in est.items()],
+            [(mileage, group_seqs[pos]) for pos, mileage in est.items()],
         )
+
+    def set_group_hidden(self, tunnel_id: int, seq: int, hidden: bool) -> None:
+        """隱藏群組只改模型標記；來源照片與其關聯一律保留。"""
+        meta = self.ws.tunnel_meta(tunnel_id)
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "UPDATE photo_groups SET hidden = ? WHERE seq = ?", (int(hidden), seq)
+                )
+                if cur.rowcount == 0:
+                    raise KeyError(seq)
+                self._recompute(
+                    conn,
+                    group_seqs=self._visible_group_seqs(conn),
+                    start_m=int(meta["start_m"]),
+                    end_m=int(meta["end_m"]),
+                    anchors=self._resolved_anchors(conn),
+                )
+        finally:
+            conn.close()
 
     # ---------- 異狀標註 / 備註 ----------
 
@@ -488,26 +541,26 @@ class TunnelService:
             conn.close()
 
     def mark_missing_photo(self, tunnel_id: int, photo_id: int) -> None:
-        info = self.meta(tunnel_id)
+        meta = self.ws.tunnel_meta(tunnel_id)
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             with conn:
                 if not mark_missing_with_transfer(conn, photo_id):
                     raise KeyError(photo_id)
                 existing = self._resolved_anchors(conn)
-                self._recompute(conn, group_count=info["group_count"], start_m=info["start_m"], end_m=info["end_m"], anchors=existing)
+                self._recompute(conn, group_seqs=self._visible_group_seqs(conn), start_m=int(meta["start_m"]), end_m=int(meta["end_m"]), anchors=existing)
         finally:
             conn.close()
 
     def restore_missing_photo(self, tunnel_id: int, photo_id: int) -> None:
-        info = self.meta(tunnel_id)
+        meta = self.ws.tunnel_meta(tunnel_id)
         conn = self.ws.open_tunnel(tunnel_id)
         try:
             with conn:
                 if not restore_photo(conn, photo_id):
                     raise KeyError(photo_id)
                 existing = self._resolved_anchors(conn)
-                self._recompute(conn, group_count=info["group_count"], start_m=info["start_m"], end_m=info["end_m"], anchors=existing)
+                self._recompute(conn, group_seqs=self._visible_group_seqs(conn), start_m=int(meta["start_m"]), end_m=int(meta["end_m"]), anchors=existing)
         finally:
             conn.close()
 
@@ -609,7 +662,7 @@ class TunnelService:
                 existing = self._resolved_anchors(conn)
                 self._recompute(
                     conn,
-                    group_count=len(result.groups),
+                    group_seqs=self._visible_group_seqs(conn),
                     start_m=info["start_m"],
                     end_m=info["end_m"],
                     anchors=existing,
@@ -749,11 +802,11 @@ class TunnelService:
                     )
                 _recompute_missing_counts(conn)
 
-                new_total = conn.execute("SELECT COUNT(*) AS n FROM photo_groups").fetchone()["n"]
+                new_total = conn.execute("SELECT COUNT(*) AS n FROM photo_groups WHERE hidden = 0").fetchone()["n"]
                 existing = self._resolved_anchors(conn)
                 self._recompute(
                     conn,
-                    group_count=new_total,
+                    group_seqs=self._visible_group_seqs(conn),
                     start_m=info["start_m"],
                     end_m=info["end_m"],
                     anchors=existing,
@@ -840,9 +893,9 @@ class TunnelService:
             conn.close()
 
     def unify_camera_orientation(self, tunnel_id: int, camera_seq: int, angle: int) -> int:
-        """把機位內「顯示方向與多數派不同」的照片批次轉正（rotation_override=angle）。
+        """把機位內「顯示方向與多數派不同」的照片依指定方向批次旋轉。
 
-        僅少數派方向存在時有效；回傳更新張數。完成後重算比例異常旗標。
+        angle 是相對於照片目前方向的旋轉量；回傳更新張數。完成後重算比例異常旗標。
         """
         from .importer import compute_aspect_anomalies
 
@@ -861,7 +914,7 @@ class TunnelService:
                     (cam["id"],),
                 ).fetchall()
                 landscape = portrait = 0
-                eff: list[tuple[int, bool]] = []  # (photo_id, is_portrait)
+                eff: list[tuple[int, bool, int]] = []  # (photo_id, is_portrait, override)
                 for r in rows:
                     w, h = (
                         (r["height"], r["width"])
@@ -869,7 +922,7 @@ class TunnelService:
                         else (r["width"], r["height"])
                     )
                     is_p = h > w
-                    eff.append((r["id"], is_p))
+                    eff.append((r["id"], is_p, r["rov"]))
                     if is_p:
                         portrait += 1
                     else:
@@ -877,10 +930,12 @@ class TunnelService:
                 if not landscape or not portrait:
                     return 0
                 majority_portrait = portrait > landscape
-                mismatched = [pid for pid, is_p in eff if is_p != majority_portrait]
+                mismatched = [
+                    (pid, rov) for pid, is_p, rov in eff if is_p != majority_portrait
+                ]
                 conn.executemany(
                     "UPDATE photos SET rotation_override = ? WHERE id = ?",
-                    [(angle, pid) for pid in mismatched],
+                    [((rov + angle) % 360, pid) for pid, rov in mismatched],
                 )
                 compute_aspect_anomalies(conn)
                 return len(mismatched)
@@ -904,6 +959,17 @@ class TunnelService:
                     "SELECT seq, name, rotation, grid_pos FROM cameras ORDER BY seq"
                 ).fetchall()
             ]
+
+            # 匯入報告保留掃描結果，但群組統計必須反映合併後的即時狀態。
+            missing_rows = conn.execute(
+                "SELECT missing_count, COUNT(*) AS count "
+                "FROM photo_groups WHERE hidden = 0 GROUP BY missing_count ORDER BY missing_count"
+            ).fetchall()
+            report["group_count"] = sum(r["count"] for r in missing_rows)
+            report["missing_distribution"] = {
+                str(r["missing_count"]): r["count"] for r in missing_rows
+            }
+
             layout_cols = conn.execute(
                 "SELECT value FROM meta WHERE key = 'layout_cols'"
             ).fetchone()
@@ -925,6 +991,12 @@ class TunnelService:
             dangling = [
                 a for a in list_anchors_resolved(conn) if a["dangling"] or a["group_seq"] is None
             ]
+            hidden_groups = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT seq, est_mileage_m FROM photo_groups WHERE hidden = 1 ORDER BY seq"
+                ).fetchall()
+            ]
         finally:
             conn.close()
         return {
@@ -937,5 +1009,5 @@ class TunnelService:
             "manual_missing": manual_missing,
             "rotation_overrides": rotation_overrides,
             "dangling_anchors": dangling,
+            "hidden_groups": hidden_groups,
         }
-

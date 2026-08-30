@@ -60,6 +60,15 @@ async function handle(resp) {
 export const api = {
   listTunnels: () => fetch('/api/tunnels').then(handle),
 
+  renameTunnel: async (tid, name) => {
+    const r = await fetch(`/api/tunnels/${tid}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    return handle(r)
+  },
+
   previewImport: (body) =>
     fetch('/api/tunnels/preview', {
       method: 'POST',
@@ -103,6 +112,15 @@ export const api = {
 
   nearestByMileage: (tid, m) =>
     fetch(`/api/tunnels/${tid}/groups/by_mileage?m=${m}`).then(handle),
+
+  setGroupHidden: async (tid, seq, hidden) => {
+    const r = await fetch(`/api/tunnels/${tid}/groups/${seq}/visibility`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden }),
+    })
+    return handle(r)
+  },
 
   anchors: (tid) => fetch(`/api/tunnels/${tid}/anchors`).then(handle),
 

@@ -163,6 +163,10 @@ class MoveBody(BaseModel):
     project_id: int | None = None
 
 
+class GroupVisibilityBody(BaseModel):
+    hidden: bool
+
+
 def _read_orientation_tag(path: Path) -> int:
     """讀 EXIF orientation(274)；讀取失敗視為 1（不轉正）。"""
     try:
@@ -568,6 +572,17 @@ def create_app(workspace: Workspace) -> FastAPI:
     def tunnel_meta(tid: int):
         return service.meta(tid)
 
+    @app.put("/api/tunnels/{tid}")
+    def rename_tunnel(tid: int, body: ProjectBody):
+        try:
+            workspace.rename_tunnel(tid, body.name)
+        except KeyError:
+            raise HTTPException(404, "隧道不存在")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        hub.broadcast(tid, {"type": "tunnel_renamed", "name": body.name.strip()})
+        return {"ok": True}
+
     @app.get("/api/tunnels/{tid}/overview")
     def tunnel_overview(tid: int):
         return service.overview(tid)
@@ -582,6 +597,15 @@ def create_app(workspace: Workspace) -> FastAPI:
         if hit is None:
             raise HTTPException(404, "此隧道沒有任何群組")
         return hit
+
+    @app.put("/api/tunnels/{tid}/groups/{seq}/visibility")
+    def set_group_visibility(tid: int, seq: int, body: GroupVisibilityBody):
+        try:
+            service.set_group_hidden(tid, seq, body.hidden)
+        except KeyError:
+            raise HTTPException(404, "群組不存在")
+        hub.broadcast(tid, {"type": "group_visibility", "group_seq": seq, "hidden": body.hidden})
+        return {"ok": True}
 
     @app.get("/api/tunnels/{tid}/anchors")
     def anchors(tid: int):

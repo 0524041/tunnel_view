@@ -26,9 +26,9 @@ body {
   font-size: 0.875rem;
   overflow: hidden;
   background-image:
-    radial-gradient(ellipse 90% 70% at 50% -10%, rgba(255, 179, 0, 0.045), transparent),
-    repeating-linear-gradient(0deg, transparent 0 39px, rgba(255, 255, 255, 0.018) 39px 40px),
-    repeating-linear-gradient(90deg, transparent 0 39px, rgba(255, 255, 255, 0.018) 39px 40px);
+    radial-gradient(ellipse 90% 70% at 50% -10%, var(--ambient), transparent),
+    repeating-linear-gradient(0deg, transparent 0 39px, var(--grid-line) 39px 40px),
+    repeating-linear-gradient(90deg, transparent 0 39px, var(--grid-line) 39px 40px);
 }
 
 ::selection {
@@ -44,11 +44,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #262b33;
+  background: var(--scroll-thumb);
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #333a44;
+  background: var(--scroll-thumb-hover);
 }
 
 button {

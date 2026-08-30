@@ -178,6 +178,34 @@ class TestUnifyEndpoint:
         r = env.post(f"/api/tunnels/{env.tid}/cameras/0/unify", json={"angle": 45})
         assert r.status_code == 400
 
+    def test_unify_adds_to_existing_photo_rotation(self, env):
+        tid = env.tid
+        groups = env.get(
+            f"/api/tunnels/{tid}/groups",
+            params={"around": 0, "before": 10, "after": 10},
+        ).json()
+        portrait_pids = [
+            p["photo_id"]
+            for g in groups
+            for p in g["photos"]
+            if p["camera_seq"] == 0 and p["width"] < p["height"]
+        ]
+        for pid in portrait_pids:
+            assert env.put(
+                f"/api/tunnels/{tid}/photos/{pid}/rotation", json={"angle": 180}
+            ).status_code == 200
+
+        r = env.post(f"/api/tunnels/{tid}/cameras/0/unify", json={"angle": 90})
+        assert r.status_code == 200
+        assert r.json()["updated"] == len(portrait_pids)
+
+        updated = env.get(
+            f"/api/tunnels/{tid}/groups",
+            params={"around": 0, "before": 10, "after": 10},
+        ).json()
+        by_id = {p["photo_id"]: p for g in updated for p in g["photos"]}
+        assert all(by_id[pid]["rotation_override"] == 270 for pid in portrait_pids)
+
 
 
 class TestRotationComposition:
@@ -226,10 +254,24 @@ class TestRotationComposition:
 
 class TestOrientationStatsEndpoint:
     def test_get_stats_for_existing_tunnel(self, env):
+        import io
+
         r = env.get(f"/api/tunnels/{env.tid}/orientation-stats")
         assert r.status_code == 200
         by_name = {s["camera"]: s for s in r.json()}
-        assert by_name["左壁"]["landscape"] == 3
-        assert by_name["左壁"]["portrait"] == 2
-        assert by_name["左壁"]["minority"] == "portrait"
+        mixed = by_name["左壁"]
+        assert mixed["landscape"] == 3
+        assert mixed["portrait"] == 2
+        assert mixed["minority"] == "portrait"
+        assert mixed["minority_pixel_version"] == 0
+        assert mixed["majority_pixel_version"] == 0
+
+        minority = env.get(
+            f"/api/tunnels/{env.tid}/photos/{mixed['minority_photo_id']}"
+        )
+        majority = env.get(
+            f"/api/tunnels/{env.tid}/photos/{mixed['majority_photo_id']}"
+        )
+        assert Image.open(io.BytesIO(minority.content)).size == (30, 40)
+        assert Image.open(io.BytesIO(majority.content)).size == (40, 30)
         assert by_name["右壁"]["minority"] is None

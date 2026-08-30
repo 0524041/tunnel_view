@@ -208,12 +208,14 @@ def orientation_stats(conn) -> list[dict]:
     cams = conn.execute("SELECT id, seq, name, rotation FROM cameras ORDER BY seq").fetchall()
     for cam in cams:
         rows = conn.execute(
-            "SELECT width, height, COALESCE(rotation_override, 0) AS rov FROM photos "
+            "SELECT id, width, height, COALESCE(rotation_override, 0) AS rov, "
+            "COALESCE(pixel_version, 0) AS pixel_version FROM photos "
             "WHERE camera_id = ? AND COALESCE(manual_missing, 0) = 0 "
             "AND width IS NOT NULL AND height IS NOT NULL",
             (cam["id"],),
         ).fetchall()
         landscape = portrait = 0
+        samples = {}
         for r in rows:
             w, h = (
                 (r["height"], r["width"])
@@ -222,12 +224,29 @@ def orientation_stats(conn) -> list[dict]:
             )
             if h > w:
                 portrait += 1
+                samples.setdefault("portrait", r)
             else:
                 landscape += 1
+                samples.setdefault("landscape", r)
         minority = None
         if landscape and portrait:
             minority = "portrait" if portrait < landscape else "landscape"
-        stats.append({"camera": cam["name"], "seq": cam["seq"], "landscape": landscape, "portrait": portrait, "minority": minority})
+        majority = None if minority is None else ("landscape" if minority == "portrait" else "portrait")
+        minority_sample = samples.get(minority)
+        majority_sample = samples.get(majority)
+        stats.append(
+            {
+                "camera": cam["name"],
+                "seq": cam["seq"],
+                "landscape": landscape,
+                "portrait": portrait,
+                "minority": minority,
+                "minority_photo_id": minority_sample["id"] if minority_sample else None,
+                "minority_pixel_version": minority_sample["pixel_version"] if minority_sample else None,
+                "majority_photo_id": majority_sample["id"] if majority_sample else None,
+                "majority_pixel_version": majority_sample["pixel_version"] if majority_sample else None,
+            }
+        )
     return stats
 
 

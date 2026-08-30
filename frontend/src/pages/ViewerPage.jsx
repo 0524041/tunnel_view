@@ -30,7 +30,7 @@ import AnomalyOverview from '../components/AnomalyOverview'
 import HelpModal from '../components/HelpModal'
 import UnifyDialog from '../components/UnifyDialog'
 
-export default function ViewerPage({ tunnelId, active }) {
+export default function ViewerPage({ tunnelId, active, onTitle }) {
   const [ov, setOv] = useState(null)
   const [info, setInfo] = useState(null)
   const [anchors, setAnchors] = useState([])
@@ -81,7 +81,6 @@ export default function ViewerPage({ tunnelId, active }) {
     api.overview(tunnelId).then(setOv).catch(() => {})
     api.anchors(tunnelId).then(setAnchors).catch(() => {})
     api.info(tunnelId).then(setInfo).catch(() => {})
-    ensureWindow(tunnelId, 0, cacheRef.current, pendingRef.current, setGroups)
   }, [tunnelId])
 
   // 異狀摘要：里程軌 tooltip 與總覽頁共用
@@ -109,11 +108,13 @@ export default function ViewerPage({ tunnelId, active }) {
       setAnoRefresh((k) => k + 1)
       return
     }
-    if (['realigned', 'merged', 'camera_updated', 'layout_updated', 'photo_updated'].includes(msg.type)) {
+    if (msg.type === 'tunnel_renamed') onTitle?.(msg.name)
+    if (['realigned', 'merged', 'camera_updated', 'layout_updated', 'photo_updated', 'group_visibility'].includes(msg.type)) {
       cacheRef.current.clear()
       pendingRef.current.clear()
       setGroups(new Map())
-      ensureWindow(tunnelId, current, cacheRef.current, pendingRef.current, setGroups)
+      const seq = ov?.groups.seq[current]
+      if (seq != null) ensureWindow(tunnelId, seq, cacheRef.current, pendingRef.current, setGroups)
     }
   })
 
@@ -121,8 +122,13 @@ export default function ViewerPage({ tunnelId, active }) {
 
   useEffect(() => {
     if (!total) return
-    ensureWindow(tunnelId, current, cacheRef.current, pendingRef.current, setGroups)
-  }, [current, total, tunnelId])
+    if (current >= total) {
+      setCurrent(total - 1)
+      return
+    }
+    const seq = ov?.groups.seq[current]
+    if (seq != null) ensureWindow(tunnelId, seq, cacheRef.current, pendingRef.current, setGroups)
+  }, [current, total, tunnelId, ov])
 
   const goto = useCallback(
     (seq) => {
@@ -132,9 +138,14 @@ export default function ViewerPage({ tunnelId, active }) {
     [total],
   )
 
+  const gotoSeq = useCallback((seq) => {
+    const index = ov?.groups.seq.indexOf(seq)
+    if (index != null && index >= 0) setCurrent(index)
+  }, [ov])
+
   useEffect(() => {
     if (!ov || !active) return
-    const nxt = groups.get(current + 1)
+    const nxt = groups.get(ov.groups.seq[current + 1])
     if (nxt) {
       for (const p of nxt.photos) {
         new Image().src = api.photoUrl(tunnelId, p.photo_id, 1600, p)
@@ -144,7 +155,7 @@ export default function ViewerPage({ tunnelId, active }) {
 
   const openOriginal = useCallback(
     (photo) => {
-      const g = groups.get(current)
+      const g = groups.get(ov.groups.seq[current])
       if (!g) return
       const decorated = g.photos.map((p) => ({
         ...p,
@@ -212,7 +223,7 @@ export default function ViewerPage({ tunnelId, active }) {
   const locateInViewer = (row) => {
     if (row.group_seq == null) return
     setMode('view')
-    goto(row.group_seq)
+    gotoSeq(row.group_seq)
     setLocateTarget({ photoId: row.photo_id, seq: row.group_seq })
     setTimeout(() => setLocateTarget(null), 2200)
   }
@@ -228,7 +239,8 @@ export default function ViewerPage({ tunnelId, active }) {
     )
   }
 
-  const group = groups.get(current) ?? null
+  const groupSeq = ov.groups.seq[current]
+  const group = groups.get(groupSeq) ?? null
   const anchoredHere = ov.groups.anchored[current]
   const cameraMeta = info?.cameras ?? []
   const layoutCols = info?.layout_cols ?? 'auto'
@@ -236,12 +248,13 @@ export default function ViewerPage({ tunnelId, active }) {
   return (
     <div className="viewer">
       <div className="vtop">
-        <button type="button" className="btn small" onClick={() => setSearchOpen(true)}>
+        <button type="button" className="btn small" data-tour="viewer-search" onClick={() => setSearchOpen(true)}>
           搜尋里程 <kbd className="mono">Ctrl G</kbd>
         </button>
         <button
           type="button"
           className="btn small"
+          data-tour="viewer-fit"
           title="照片呈現模式：完整（contain）／填滿（cover）"
           onClick={() => {
             const next = fit === 'contain' ? 'cover' : 'contain'
@@ -251,14 +264,14 @@ export default function ViewerPage({ tunnelId, active }) {
         >
           {fit === 'contain' ? '▭ 完整' : '▩ 填滿'}
         </button>
-        <div className="mode-seg">
+        <div className="mode-seg" data-tour="viewer-mode">
           <button type="button" className={mode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>檢視</button>
           <button type="button" className={mode === 'anomalies' ? 'on' : ''} onClick={() => setMode('anomalies')}>異狀總覽</button>
         </div>
         <button type="button" className="btn small" title="偵測各機位混合直橫式並批次轉正（含方向預覽）" onClick={openUnify}>↻ 批次轉正</button>
         <div className="vread mono">
           <span className="vread-seq">
-            群組 <b>{String(current + 1).padStart(4, '0')}</b> / {ov.group_count}
+            群組 <b>{String((groupSeq ?? -1) + 1).padStart(4, '0')}</b> / {ov.group_count}
           </span>
           <span className={`vread-mile ${anchoredHere ? 'lock' : ''}`}>
             {anchoredHere ? '' : '~'}
@@ -277,18 +290,33 @@ export default function ViewerPage({ tunnelId, active }) {
           }}
         >⇅ {displayOrder === 'asc' ? '小→大' : '大→小'}</button>
         <div className="vspacer" />
+        <button
+          type="button"
+          className="btn small danger"
+          disabled={groupSeq == null}
+          title="只從模型顯示與里程計算隱藏，來源照片不會變更"
+          onClick={() => {
+            if (!window.confirm(`隱藏群組 #${String(groupSeq + 1).padStart(4, '0')}？它將不再顯示或參與里程計算，稍後可在資訊面板恢復。`)) return
+            api.setGroupHidden(tunnelId, groupSeq, true)
+              .then(() => toast('群組已隱藏並重新計算里程'))
+              .then(refreshMeta)
+              .catch((e) => toast(e.message, 'err'))
+          }}
+        >隱藏群組</button>
         <button type="button" className="btn small" onClick={() => setReviewOpen(true)}>合併邊界（M）</button>
         <button
           type="button"
           className={`btn small ${anchorsOpen ? 'primary' : ''}`}
+          data-tour="viewer-anchors"
           onClick={() => togglePanel('anchors')}
         >錨點列</button>
         <button
           type="button"
           className={`btn small ${infoOpen ? 'primary' : ''}`}
+          data-tour="viewer-info"
           onClick={() => togglePanel('info')}
         >資訊</button>
-        <button type="button" className="btn small ghost" title="說明與快捷鍵（?）" onClick={() => setHelpOpen(true)}>?</button>
+        <button type="button" className="btn small ghost" data-tour="viewer-help" title="說明與快捷鍵（?）" onClick={() => setHelpOpen(true)}>?</button>
       </div>
 
       {mode === 'view' ? (
@@ -302,7 +330,7 @@ export default function ViewerPage({ tunnelId, active }) {
               layoutCols={layoutCols}
               fit={fit}
               anomalyPaths={anomalyPaths(info)}
-              highlightPhotoId={current === locateTarget?.seq ? locateTarget?.photoId : null}
+              highlightPhotoId={groupSeq === locateTarget?.seq ? locateTarget?.photoId : null}
               onOpenOriginal={(photo) => openOriginal(photo)}
               onRotate={(pid, angle) =>
                 api.setPhotoRotation(tunnelId, pid, angle)
@@ -316,8 +344,8 @@ export default function ViewerPage({ tunnelId, active }) {
                 <AnchorDrawer
                   open
                   anchors={anchors}
-                  current={current}
-                  onJump={(s) => goto(s)}
+                  current={groupSeq}
+                  onJump={gotoSeq}
                   onDelete={(s) =>
                     api.deleteAnchor(tunnelId, s)
                       .then(() => toast('錨點已刪除'))
@@ -333,6 +361,7 @@ export default function ViewerPage({ tunnelId, active }) {
                   tunnelId={tunnelId}
                   info={info}
                   onChanged={refreshMeta}
+                  onTitle={onTitle}
                   currentGroupCount={ov.group_count}
                 />
               </div>
@@ -346,7 +375,7 @@ export default function ViewerPage({ tunnelId, active }) {
             anchored={ov.groups.anchored}
             anomaly={ov.groups.anomaly}
             ano={ov.groups.ano}
-            anomsBySeq={anomsBySeq}
+            anomsBySeq={Object.fromEntries(ov.groups.seq.map((seq, i) => [i, anomsBySeq[seq]]).filter(([, value]) => value))}
             startM={ov.start_m}
             endM={ov.end_m}
             isReversed={isReversed}
@@ -369,10 +398,10 @@ export default function ViewerPage({ tunnelId, active }) {
       {dialogOpen && (
         <AnchorDialog
           tunnelId={tunnelId}
-          seq={current}
+          seq={groupSeq}
           initial={group ? group.est_mileage_m : null}
-          prevAnchor={nearestAnchor(anchors, current, -1)}
-          nextAnchor={nearestAnchor(anchors, current, 1)}
+          prevAnchor={nearestAnchor(anchors, groupSeq, -1)}
+          nextAnchor={nearestAnchor(anchors, groupSeq, 1)}
           onClose={() => setDialogOpen(false)}
         />
       )}
@@ -381,7 +410,7 @@ export default function ViewerPage({ tunnelId, active }) {
         <MileageSearch
           onJump={(m) => {
             api.nearestByMileage(tunnelId, m).then((h) => {
-              goto(h.seq)
+              gotoSeq(h.seq)
               setSearchOpen(false)
             })
           }}
@@ -392,7 +421,7 @@ export default function ViewerPage({ tunnelId, active }) {
       {reviewOpen && (
         <ReviewMode
           tunnelId={tunnelId}
-          current={current}
+          current={groupSeq}
           cameras={ov.cameras}
           onClose={() => setReviewOpen(false)}
           onChanged={refreshMeta}
@@ -413,7 +442,8 @@ export default function ViewerPage({ tunnelId, active }) {
             cacheRef.current.clear()
             pendingRef.current.clear()
             setGroups(new Map())
-            ensureWindow(tunnelId, current, cacheRef.current, pendingRef.current, setGroups)
+            const seq = ov.groups.seq[current]
+            if (seq != null) ensureWindow(tunnelId, seq, cacheRef.current, pendingRef.current, setGroups)
             refreshMeta()
           }}
         />
@@ -457,7 +487,7 @@ async function ensureWindow(tunnelId, around, cache, pending, setGroups) {
   if (cache.has(around) || pending.has(around)) return
   pending.add(around)
   try {
-    const rows = await api.groups(tunnelId, Math.max(around, 6), 6, 14)
+    const rows = await api.groups(tunnelId, around, 6, 14)
     for (const g of rows) cache.set(g.seq, g)
     setGroups(new Map(cache))
   } catch {

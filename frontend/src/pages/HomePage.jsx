@@ -31,7 +31,7 @@ function TunnelCard({ t, projectName, onOpen, onDelete, onMove }) {
   const createdAt = fmtDateTime(t.created_at, true)
   const updatedAt = fmtDateTime(t.updated_at)
   return (
-    <button type="button" className="tunnel-card panel" onClick={() => onOpen(t.tunnel_id, t.name)}>
+    <button type="button" className="tunnel-card panel" data-tour="home-tunnel-card" onClick={() => onOpen(t.tunnel_id, t.name)}>
       <div className="tc-top">
         <span className="display tc-name">{t.name}</span>
         <span className="chip">{t.camera_count} 台相機</span>
@@ -199,17 +199,18 @@ export default function HomePage({ onOpenTunnel, onNewTunnel }) {
       </header>
 
       <main className="home-body">
-        <div className="home-head">
+        <div className="home-head" data-tour="home-projects">
           <input
             className="field"
+            data-tour="home-search"
             style={{ maxWidth: 320 }}
             placeholder="🔍 搜尋專案或隧道…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
           <span style={{ display: 'inline-flex', gap: 8 }}>
-            <button type="button" className="btn" onClick={() => setProjModal({ mode: 'create', moveTo: null })}>＋ 新增專案</button>
-            <button type="button" className="btn primary" onClick={onNewTunnel}>＋ 建立新隧道</button>
+            <button type="button" className="btn" data-tour="home-new-project" onClick={() => setProjModal({ mode: 'create', moveTo: null })}>＋ 新增專案</button>
+            <button type="button" className="btn primary" data-tour="home-new-tunnel" onClick={onNewTunnel}>＋ 建立新隧道</button>
           </span>
         </div>
 

@@ -54,17 +54,15 @@ export default function UnifyDialog({ tunnelId, items, onClose, onApplied }) {
   // 取樣：每個混合機位抓一張少數派照片＋一張多數派參考照
   useEffect(() => {
     let alive = true
-    api.groups(tunnelId, 0, 10, 10).then((groups) => {
-      if (!alive || !Array.isArray(groups)) return
-      const photos = groups.flatMap((g) => g.photos || [])
+    api.orientationStats(tunnelId).then((stats) => {
+      if (!alive || !Array.isArray(stats)) return
       const out = {}
-      for (const it of items) {
-        const mine = photos.filter((p) => p.camera_seq === it.seq && p.width && p.height)
-        if (!mine.length) continue
-        const minorityIsPortrait = it.minority === 'portrait'
-        out[it.seq] = {
-          minorityPid: (mine.find((p) => p.width < p.height === minorityIsPortrait) || mine[0]).photo_id,
-          majorityPid: mine.find((p) => p.width < p.height !== minorityIsPortrait)?.photo_id || null,
+      for (const stat of stats) {
+        out[stat.seq] = {
+          minorityPid: stat.minority_photo_id,
+          minorityPixelVersion: stat.minority_pixel_version,
+          majorityPid: stat.majority_photo_id,
+          majorityPixelVersion: stat.majority_pixel_version,
         }
       }
       setSamples(out)
@@ -120,12 +118,18 @@ export default function UnifyDialog({ tunnelId, items, onClose, onApplied }) {
                   <div className="hint" style={{ textAlign: 'center', marginBottom: 4 }}>
                     轉後預覽{c !== 'skip' ? `（${c === 'cw' ? '↻ 順時針 90°' : '↺ 逆時針 90°'}）` : ''}
                   </div>
-                  <PreviewBox url={s ? api.photoUrl(tunnelId, s.minorityPid, 320) : null} deg={deg} />
+                  <PreviewBox
+                    url={s?.minorityPid ? api.photoUrl(tunnelId, s.minorityPid, 320, { pixel_version: s.minorityPixelVersion }) : null}
+                    deg={deg}
+                  />
                 </div>
                 <div style={{ fontSize: 22 }}>vs</div>
                 <div>
                   <div className="hint" style={{ textAlign: 'center', marginBottom: 4 }}>多數派參考</div>
-                  <PreviewBox url={s?.majorityPid ? api.photoUrl(tunnelId, s.majorityPid, 320) : null} deg={0} />
+                  <PreviewBox
+                    url={s?.majorityPid ? api.photoUrl(tunnelId, s.majorityPid, 320, { pixel_version: s.majorityPixelVersion }) : null}
+                    deg={0}
+                  />
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <button type="button" className={`btn small ${c === 'cw' ? 'primary' : ''}`} onClick={() => setChoices((m) => ({ ...m, [it.seq]: 'cw' }))}>↻ 順時針</button>

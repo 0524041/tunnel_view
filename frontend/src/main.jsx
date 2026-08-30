@@ -30,6 +30,7 @@ import './styles/components.css'
 import './styles/App.css'
 import './styles/pages.css'
 import './styles/viewer.css'
+import './styles/onboarding.css'
 import App from './App.jsx'
 
 createRoot(document.getElementById('root')).render(

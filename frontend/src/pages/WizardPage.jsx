@@ -183,7 +183,7 @@ export default function WizardPage({ onDone, onCancel }) {
     <div className="wizard wizard-wide">
       <div className="wiz-head">
         <span className="display wiz-title">建立新隧道</span>
-        <div className="wiz-steps mono">
+        <div className="wiz-steps mono" data-tour="wizard-steps">
           {['基本設定', '相機與版型', '對齊預覽'].map((s, i) => (
             <span key={s} className={`wstep ${step >= i + 1 ? 'on' : ''}`}>
               <b>{i + 1}</b> {s}
@@ -194,7 +194,7 @@ export default function WizardPage({ onDone, onCancel }) {
 
       <div className="wiz-body panel">
         {step === 1 && (
-          <section>
+          <section data-tour="wizard-basics">
             <label className="label">隧道名稱</label>
             <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="例：八卦山隧道 西行" autoFocus />
 

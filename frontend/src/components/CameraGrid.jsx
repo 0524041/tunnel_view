@@ -83,6 +83,7 @@ export default function CameraGrid({
   return (
     <div
       className={`cgrid fit-${fit}`}
+      data-tour="viewer-grid"
       style={{ gridTemplateColumns: `repeat(${colsNum}, minmax(0, 1fr))` }}
     >
       {cells.map((cam, i) => renderCell(cam, i))}

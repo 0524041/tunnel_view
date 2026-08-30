@@ -16,6 +16,7 @@
 
 """修訂 R1 API 契約：改判/復原、重新對齊、合併、旋轉、資訊面板。"""
 
+from collections import Counter
 from datetime import datetime, timedelta
 
 import pytest
@@ -119,6 +120,36 @@ class TestFlagAndMissing:
         assert anchors[0]["group_seq"] == 2  # 錨點存活且仍在群組 2
 
 
+class TestTunnelNameAndGroupVisibility:
+    def test_rename_tunnel_updates_index_and_model(self, env):
+        r = env.put(f"/api/tunnels/{env.tid}", json={"name": "已改名隧道"})
+        assert r.status_code == 200
+        assert env.get(f"/api/tunnels/{env.tid}/meta").json()["name"] == "已改名隧道"
+        tunnel = next(t for t in env.get("/api/tunnels").json() if t["tunnel_id"] == env.tid)
+        assert tunnel["name"] == "已改名隧道"
+
+    def test_hidden_group_is_excluded_from_display_and_mileage_calculation(self, env):
+        before = env.get(f"/api/tunnels/{env.tid}/overview").json()
+        assert before["groups"]["seq"] == [0, 1, 2, 3, 4]
+        assert before["groups"]["est"] == [23000, 23300, 23600, 23900, 24200]
+
+        r = env.put(f"/api/tunnels/{env.tid}/groups/1/visibility", json={"hidden": True})
+        assert r.status_code == 200
+        hidden = env.get(f"/api/tunnels/{env.tid}/overview").json()
+        assert hidden["groups"]["seq"] == [0, 2, 3, 4]
+        assert hidden["groups"]["est"] == [23000, 23400, 23800, 24200]
+        assert hidden["group_count"] == 4
+        assert list(_window(env, 1)) == [0, 2, 3, 4]
+        assert env.get(f"/api/tunnels/{env.tid}/groups/by_mileage", params={"m": 23300}).json()["seq"] == 2
+        assert env.get(f"/api/tunnels/{env.tid}/info").json()["hidden_groups"][0]["seq"] == 1
+
+        r = env.put(f"/api/tunnels/{env.tid}/groups/1/visibility", json={"hidden": False})
+        assert r.status_code == 200
+        restored = env.get(f"/api/tunnels/{env.tid}/overview").json()
+        assert restored["groups"]["seq"] == [0, 1, 2, 3, 4]
+        assert restored["groups"]["est"] == [23000, 23300, 23600, 23900, 24200]
+
+
 class TestRealign:
     def test_dry_run_does_not_write(self, env):
         before_ov = env.get(f"/api/tunnels/{env.tid}/overview").json()
@@ -171,6 +202,13 @@ class TestMerge:
 
         ov = env.get(f"/api/tunnels/{env.tid}/overview").json()
         assert ov["group_count"] == before - 1
+
+        info = env.get(f"/api/tunnels/{env.tid}/info").json()
+        assert info["report"]["group_count"] == ov["group_count"]
+        assert info["report"]["missing_distribution"] == {
+            str(missing): count
+            for missing, count in sorted(Counter(ov["groups"]["missing"]).items())
+        }
 
     def test_merge_conflict_requires_keep(self, env):
         r = env.post(f"/api/tunnels/{env.tid}/groups/1/merge", json={"direction": "next"})
