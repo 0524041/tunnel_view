@@ -97,6 +97,8 @@ class CameraBody(BaseModel):
     name: str
     folder: str
     rotation: int = 0
+    mirror_h: bool = False
+    mirror_v: bool = False
     grid_pos: int = -1
 
 
@@ -134,6 +136,8 @@ class MergeBody(BaseModel):
 class CameraUpdateBody(BaseModel):
     name: str | None = None
     rotation: int | None = None
+    mirror_h: bool | None = None
+    mirror_v: bool | None = None
     grid_pos: int | None = None
 
 
@@ -217,7 +221,8 @@ def _pregen_thumbs(workspace: Workspace, tid: int) -> None:
         conn = workspace.open_tunnel(tid)
         rows = conn.execute(
             "SELECT p.id AS pid, c.root_path AS root, p.rel_path AS rel, "
-            "COALESCE(p.rotation_override, -1) AS rov, COALESCE(c.rotation, 0) AS crot, "
+            "COALESCE(p.rotation_override, 0) AS rov, COALESCE(c.rotation, 0) AS crot, "
+            "COALESCE(c.mirror_h, 0) AS mirror_h, COALESCE(c.mirror_v, 0) AS mirror_v, "
             "COALESCE(p.pixel_version, 0) AS pv, p.orientation AS orient "
             "FROM photos p JOIN cameras c ON c.id = p.camera_id "
             # orientation NULL（舊隧道未 backfill）先跳過——避免以預設值生成
@@ -248,16 +253,24 @@ def _pregen_thumbs(workspace: Workspace, tid: int) -> None:
                     return
             except Exception:
                 pass
-            extra = (r["rov"] if r["rov"] >= 0 else r["crot"]) % 360
+            extra = (r["crot"] + r["rov"]) % 360
             needs_t = int(r["orient"] or 1) not in (0, 1)
             variants = [(1600, extra)] + ([(1600, 0)] if extra else [])
             for w_, ex_ in variants:
-                cf = cache_dir / f"{tid}_{r['pid']}_{w_}_{ex_}_v{r['pv']}.jpg"
+                mh = bool(r["mirror_h"])
+                mv = bool(r["mirror_v"])
+                mirror_key = f"_h{int(mh)}v{int(mv)}" if mh or mv else ""
+                cf = cache_dir / f"{tid}_{r['pid']}_{w_}_{ex_}{mirror_key}_v{r['pv']}.jpg"
                 try:
                     thumbs.get_or_make(
                         cf,
-                        lambda s=src, w_=w_, ex_=ex_, nt=needs_t: thumbs.make_thumbnail(
-                            s, w_, needs_transpose=nt, extra_rotation=ex_
+                        lambda s=src, w_=w_, ex_=ex_, nt=needs_t, mh=mh, mv=mv: thumbs.make_thumbnail(
+                            s,
+                            w_,
+                            needs_transpose=nt,
+                            extra_rotation=ex_,
+                            mirror_h=mh,
+                            mirror_v=mv,
                         ),
                     )
                 except Exception:
@@ -345,7 +358,14 @@ def create_app(workspace: Workspace) -> FastAPI:
             tolerance_seconds=body.tolerance_seconds,
             layout_cols=body.layout_cols,
             cameras=[
-                CameraInput(name=c.name, folder=c.folder, rotation=c.rotation, grid_pos=c.grid_pos)
+                CameraInput(
+                    name=c.name,
+                    folder=c.folder,
+                    rotation=c.rotation,
+                    mirror_h=c.mirror_h,
+                    mirror_v=c.mirror_v,
+                    grid_pos=c.grid_pos,
+                )
                 for c in body.cameras
             ],
         )
@@ -1014,8 +1034,14 @@ def create_app(workspace: Workspace) -> FastAPI:
 
     @app.put("/api/tunnels/{tid}/cameras/{seq}")
     def update_camera(tid: int, seq: int, body: CameraUpdateBody):
-        if body.name is None and body.rotation is None and body.grid_pos is None:
-            raise HTTPException(400, "需提供 name、rotation 或 grid_pos")
+        if (
+            body.name is None
+            and body.rotation is None
+            and body.mirror_h is None
+            and body.mirror_v is None
+            and body.grid_pos is None
+        ):
+            raise HTTPException(400, "需提供相機更新內容")
         if body.rotation is not None and (
             body.rotation % 90 != 0 or not (0 <= body.rotation <= 270)
         ):
@@ -1025,14 +1051,16 @@ def create_app(workspace: Workspace) -> FastAPI:
                 service.set_camera_name(tid, seq, body.name)
             if body.rotation is not None:
                 service.set_camera_rotation(tid, seq, body.rotation)
+            if body.mirror_h is not None or body.mirror_v is not None:
+                service.set_camera_mirrors(tid, seq, body.mirror_h, body.mirror_v)
             if body.grid_pos is not None:
                 service.set_camera_grid_pos(tid, seq, body.grid_pos)
         except KeyError:
             raise HTTPException(404, "相機不存在")
         except ValueError as e:
             raise HTTPException(400, str(e))
-        # R9 精準失效：僅旋轉改變像素 → 遞增該機位全部照片的 pixel_version 並清其縮圖
-        if body.rotation is not None:
+        # 旋轉或鏡像會改變像素，需失效該機位所有照片縮圖。
+        if body.rotation is not None or body.mirror_h is not None or body.mirror_v is not None:
             _bump_pixels(service, workspace, tid, service.camera_photo_ids(tid, seq))
         hub.broadcast(tid, {"type": "camera_updated", "camera_seq": seq})
         return {"ok": True}
@@ -1098,6 +1126,8 @@ def create_app(workspace: Workspace) -> FastAPI:
             raise HTTPException(404, "照片不存在")
         path: Path = info["path"]
         extra: int = info["extra_rotation"]
+        mirror_h = bool(info["mirror_h"])
+        mirror_v = bool(info["mirror_v"])
         # 快取檔版本取 URL 傳入的 pv（前端一律帶 groups API 給的當前值）；
         # 未帶時退回 DB 當前值。bump 時會清除該照片所有版本的快取檔。
         pv_val = pv if pv is not None else int(info.get("pixel_version") or 0)
@@ -1114,7 +1144,7 @@ def create_app(workspace: Workspace) -> FastAPI:
                 pass
         needs_transpose = int(orientation) not in (0, 1)
 
-        fast_path = w is None and extra == 0 and not needs_transpose
+        fast_path = w is None and extra == 0 and not needs_transpose and not mirror_h and not mirror_v
         if fast_path:
             # 原檔直出：非 immutable（原檔可能被外部取代），ETag 協商＋條件請求 304
             etag = f'"{path.stat().st_mtime_ns:x}-{path.stat().st_size:x}"'
@@ -1129,7 +1159,8 @@ def create_app(workspace: Workspace) -> FastAPI:
         suffix = "orig" if w is None else str(w)
         quality = thumbs.ORIG_QUALITY if w is None else thumbs.THUMB_QUALITY
         cache_dir = Path(workspace.root) / ".thumb_cache"
-        cache = cache_dir / f"{tid}_{photo_id}_{suffix}_{extra}_v{pv_val}.jpg"
+        mirror_key = f"_h{int(mirror_h)}v{int(mirror_v)}" if mirror_h or mirror_v else ""
+        cache = cache_dir / f"{tid}_{photo_id}_{suffix}_{extra}{mirror_key}_v{pv_val}.jpg"
 
         def _produce():
             return thumbs.make_thumbnail(
@@ -1137,6 +1168,8 @@ def create_app(workspace: Workspace) -> FastAPI:
                 w,
                 needs_transpose=needs_transpose,
                 extra_rotation=extra,
+                mirror_h=mirror_h,
+                mirror_v=mirror_v,
                 quality=quality,
             )
 

@@ -100,29 +100,39 @@ def make_thumbnail(
     *,
     needs_transpose: bool = False,
     extra_rotation: int = 0,
+    mirror_h: bool = False,
+    mirror_v: bool = False,
     quality: int | None = None,
 ) -> bytes:
     """生成 JPEG 縮圖位元組串。pyvips 可用時優先，任何例外退回 Pillow。
 
-    行為與舊版端點內嵌邏輯一致：transpose → 額外旋轉（順時針）→ 縮放至 target_w。
+    處理順序：transpose → 額外旋轉（順時針）→ 鏡像 → 縮放至 target_w。
     """
     q = quality if quality is not None else THUMB_QUALITY
     if HAVE_PYVIPS:
         try:
-            return _vips_thumb(path, target_w, needs_transpose, extra_rotation, q)
+            return _vips_thumb(
+                path, target_w, needs_transpose, extra_rotation, q, mirror_h, mirror_v
+            )
         except Exception:
             pass
-    return _pil_thumb(path, target_w, needs_transpose, extra_rotation, q)
+    return _pil_thumb(path, target_w, needs_transpose, extra_rotation, q, mirror_h, mirror_v)
 
 
-def _vips_thumb(path, target_w, needs_transpose, extra_rotation, q) -> bytes:
-    access = "random" if (needs_transpose or extra_rotation) else "sequential"
+def _vips_thumb(
+    path, target_w, needs_transpose, extra_rotation, q, mirror_h=False, mirror_v=False
+) -> bytes:
+    access = "random" if (needs_transpose or extra_rotation or mirror_h or mirror_v) else "sequential"
     im = _pyvips.Image.new_from_file(str(path), access=access)
     if needs_transpose:
         im = im.autorot()
     extra = int(extra_rotation or 0) % 360
     if extra:
         im = im.rot(_ROT_MAP[extra])
+    if mirror_h:
+        im = im.flip("horizontal")
+    if mirror_v:
+        im = im.flip("vertical")
     if target_w:
         # 語意＝輸出圖目標寬度（與 Pillow 版一致：先旋轉後縮放）。
         # 不用 thumbnail_image——其 auto_rotate 幾何以未旋轉尺寸計算，會破壞此語意。
@@ -132,7 +142,9 @@ def _vips_thumb(path, target_w, needs_transpose, extra_rotation, q) -> bytes:
     return im.jpegsave_buffer(Q=q)
 
 
-def _pil_thumb(path, target_w, needs_transpose, extra_rotation, q) -> bytes:
+def _pil_thumb(
+    path, target_w, needs_transpose, extra_rotation, q, mirror_h=False, mirror_v=False
+) -> bytes:
     img = Image.open(path)
     if needs_transpose:
         img = ImageOps.exif_transpose(img)
@@ -143,6 +155,10 @@ def _pil_thumb(path, target_w, needs_transpose, extra_rotation, q) -> bytes:
         img = img.convert("RGB")
     if extra_rotation:
         img = img.rotate(-extra_rotation, expand=True)
+    if mirror_h:
+        img = ImageOps.mirror(img)
+    if mirror_v:
+        img = ImageOps.flip(img)
     if target_w:
         ratio = target_w / img.width
         img = img.resize((target_w, max(1, round(img.height * ratio))), Image.BILINEAR)

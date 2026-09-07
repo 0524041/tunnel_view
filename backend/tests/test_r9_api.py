@@ -164,6 +164,21 @@ class TestPixelVersionInvalidation:
             assert pvs[pid] == 1
         assert pvs[other_pid] == 0
 
+    def test_camera_mirror_bumps_all_camera_photos(self, env):
+        win = _window(env)
+        cam_pids = [p["photo_id"] for g in win for p in g["photos"] if p["camera_seq"] == 0]
+        other_pid = next(p["photo_id"] for g in win for p in g["photos"] if p["camera_seq"] != 0)
+        r = env.put(f"/api/tunnels/{env.tid}/cameras/0", json={"mirror_h": True})
+        assert r.status_code == 200
+        with env.ws.open_tunnel(env.tid) as conn:
+            pvs = {
+                row["id"]: row["pixel_version"]
+                for row in conn.execute("SELECT id, pixel_version FROM photos").fetchall()
+            }
+        for pid in cam_pids:
+            assert pvs[pid] == 1
+        assert pvs[other_pid] == 0
+
 
 class TestOrientationFromDB:
     def test_serve_backfills_null_orientation(self, env):

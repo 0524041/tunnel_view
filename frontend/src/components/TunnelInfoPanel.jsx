@@ -36,10 +36,14 @@ export default function TunnelInfoPanel({ tunnelId, info, onChanged, onTitle, cu
     if (!tunnelId) return
     api.cameraThumbs(tunnelId).then((rows) => {
       const t = {}
-      for (const r of rows) t[r.camera_seq] = api.photoUrl(tunnelId, r.photo_id, 480)
+      for (const r of rows) {
+        t[r.camera_seq] = api.photoUrl(tunnelId, r.photo_id, 480, {
+          pixel_version: r.pixel_version,
+        })
+      }
       setCamThumbs(t)
     }).catch(() => {})
-  }, [tunnelId])
+  }, [tunnelId, info])
 
   if (!info) return <aside className="drawer"><p className="hint" style={{ padding: 14 }}>載入中…</p></aside>
 
@@ -54,6 +58,9 @@ export default function TunnelInfoPanel({ tunnelId, info, onChanged, onTitle, cu
         if (!prev) continue
         if (prev.name !== c.name && c.name?.trim()) await api.setCameraName(tunnelId, c.seq, c.name)
         if (prev.rotation !== c.rotation) await api.setCameraRotation(tunnelId, c.seq, c.rotation)
+        if (!!prev.mirror_h !== !!c.mirror_h || !!prev.mirror_v !== !!c.mirror_v) {
+          await api.setCameraMirrors(tunnelId, c.seq, !!c.mirror_h, !!c.mirror_v)
+        }
         if ((prev.grid_pos ?? -1) !== c.grid_pos) await api.setCameraGridPos(tunnelId, c.seq, c.grid_pos)
       }
       if (cols !== info.layout_cols) await api.setLayoutCols(tunnelId, cols)
@@ -310,6 +317,8 @@ export default function TunnelInfoPanel({ tunnelId, info, onChanged, onTitle, cu
                 seq: c.seq,
                 name: c.name,
                 rotation: c.rotation,
+                mirror_h: c.mirror_h,
+                mirror_v: c.mirror_v,
                 grid_pos: c.grid_pos,
                 folder: null,
               }))}

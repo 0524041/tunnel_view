@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
 
 # 全工作區共用的異狀類型（跨隧道專案）
 BUILTIN_DEFECT_TYPES = ("裂縫", "滲漏水", "剝落", "白華", "鋼筋外露")
@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS cameras (
     dt_offset_sec REAL NOT NULL DEFAULT 0.0,
     photo_count INTEGER NOT NULL DEFAULT 0,
     rotation INTEGER NOT NULL DEFAULT 0 CHECK (rotation IN (0, 90, 180, 270)),
+    mirror_h INTEGER NOT NULL DEFAULT 0 CHECK (mirror_h IN (0, 1)),
+    mirror_v INTEGER NOT NULL DEFAULT 0 CHECK (mirror_v IN (0, 1)),
     grid_pos INTEGER NOT NULL DEFAULT -1
 );
 
@@ -155,6 +157,16 @@ def migrate_if_needed(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "ALTER TABLE cameras ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0 "
                     "CHECK (rotation IN (0, 90, 180, 270))"
+                )
+            if "mirror_h" not in cam_cols:
+                conn.execute(
+                    "ALTER TABLE cameras ADD COLUMN mirror_h INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (mirror_h IN (0, 1))"
+                )
+            if "mirror_v" not in cam_cols:
+                conn.execute(
+                    "ALTER TABLE cameras ADD COLUMN mirror_v INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (mirror_v IN (0, 1))"
                 )
             anchor_cols = {r[1] for r in conn.execute("PRAGMA table_info(anchors)")}
             if anchor_cols and "carrier_photo_id" not in anchor_cols:
@@ -511,9 +523,19 @@ class Workspace:
                 ],
             )
             tconn.executemany(
-                "INSERT INTO cameras (seq, name, root_path, rotation, grid_pos) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO cameras "
+                "(seq, name, root_path, rotation, mirror_h, mirror_v, grid_pos) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
-                    (i, c["name"], c["root_path"], int(c.get("rotation", 0)), int(c.get("grid_pos", -1)))
+                    (
+                        i,
+                        c["name"],
+                        c["root_path"],
+                        int(c.get("rotation", 0)),
+                        int(bool(c.get("mirror_h", False))),
+                        int(bool(c.get("mirror_v", False))),
+                        int(c.get("grid_pos", -1)),
+                    )
                     for i, c in enumerate(cameras)
                 ],
             )

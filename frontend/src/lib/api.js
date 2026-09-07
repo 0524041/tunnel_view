@@ -278,6 +278,15 @@ export const api = {
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
   },
 
+  setCameraMirrors: async (tid, seq, mirrorH, mirrorV) => {
+    const r = await fetch(`/api/tunnels/${tid}/cameras/${seq}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mirror_h: mirrorH, mirror_v: mirrorV }),
+    })
+    return handle(r)
+  },
+
   setPhotoRotation: async (tid, pid, angle) => {
     const r = await fetch(`/api/tunnels/${tid}/photos/${pid}/rotation`, {
       method: 'PUT',

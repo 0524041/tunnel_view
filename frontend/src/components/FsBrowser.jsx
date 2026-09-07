@@ -17,10 +17,19 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
 
-export default function FsBrowser({ initialPath, initialRotation = 0, onPick, onClose }) {
+export default function FsBrowser({
+  initialPath,
+  initialRotation = 0,
+  initialMirrorH = false,
+  initialMirrorV = false,
+  onPick,
+  onClose,
+}) {
   const [cwd, setCwd] = useState(initialPath || '')
   const [data, setData] = useState(null)
   const [rotation, setRotation] = useState(initialRotation)
+  const [mirrorH, setMirrorH] = useState(initialMirrorH)
+  const [mirrorV, setMirrorV] = useState(initialMirrorV)
   const [error, setError] = useState('')
 
   const load = (p) => {
@@ -91,7 +100,9 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
                 <img
                   src={sampleUrl}
                   alt=""
-                  style={{ transform: `rotate(${rotation}deg)` }}
+                  style={{
+                    transform: `scaleX(${mirrorH ? -1 : 1}) scaleY(${mirrorV ? -1 : 1}) rotate(${rotation}deg)`,
+                  }}
                   className={rotation % 180 !== 0 ? 'rot90' : ''}
                 />
                 <div className="mono hint">{rotation}°</div>
@@ -107,6 +118,14 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
             >
               {[0, 90, 180, 270].map((r) => <option key={r} value={r}>{r}°</option>)}
             </select>
+            <label className="fs-mirror-option">
+              <input type="checkbox" checked={mirrorH} onChange={(e) => setMirrorH(e.target.checked)} />
+              水平鏡像
+            </label>
+            <label className="fs-mirror-option">
+              <input type="checkbox" checked={mirrorV} onChange={(e) => setMirrorV(e.target.checked)} />
+              垂直鏡像
+            </label>
           </div>
         </div>
 
@@ -116,7 +135,12 @@ export default function FsBrowser({ initialPath, initialRotation = 0, onPick, on
             type="button"
             className="btn primary"
             disabled={!data?.path}
-            onClick={() => data?.path && onPick({ folder: data.path, rotation })}
+            onClick={() => data?.path && onPick({
+              folder: data.path,
+              rotation,
+              mirror_h: mirrorH,
+              mirror_v: mirrorV,
+            })}
           >選擇此資料夾</button>
         </div>
       </div>

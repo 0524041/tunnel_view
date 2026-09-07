@@ -283,6 +283,14 @@
   object-fit: contain;
   transition: transform 0.15s;
 }
+.fs-mirror-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 0.8125rem;
+}
 .rot90 {
   transform-origin: center;
 }

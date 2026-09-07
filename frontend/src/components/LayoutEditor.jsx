@@ -18,11 +18,19 @@ import { resolveLayout } from '../lib/layout'
 
 const ROT_OPTIONS = [0, 90, 180, 270]
 
+function previewTransform(camera) {
+  return [
+    `scaleX(${camera.mirror_h ? -1 : 1})`,
+    `scaleY(${camera.mirror_v ? -1 : 1})`,
+    `rotate(${camera.rotation ?? 0}deg)`,
+  ].join(' ')
+}
+
 /**
  * 共用版型編輯器：嚮導步驟二與資訊面板「相機」頁籤共用。
  *
  * props:
- *  - cameras: [{ seq, name, rotation, grid_pos, folder? }]
+ *  - cameras: [{ seq, name, rotation, mirror_h, mirror_v, grid_pos, folder? }]
  *  - thumbs:  { [seq]: 縮圖 URL }
  *  - cols:    'auto' | '1'..'4'
  *  - onChange({ cameras, cols }) — 交換/旋轉/欄數變更時回呼（父層決定持久化）
@@ -45,6 +53,13 @@ export default function LayoutEditor({
   const setRotation = (seq, rotation) => {
     onChange?.({
       cameras: cameras.map((c) => (c.seq === seq ? { ...c, rotation } : c)),
+      cols,
+    })
+  }
+
+  const toggleMirror = (seq, key) => {
+    onChange?.({
+      cameras: cameras.map((c) => (c.seq === seq ? { ...c, [key]: !c[key] } : c)),
       cols,
     })
   }
@@ -135,21 +150,41 @@ export default function LayoutEditor({
                   <img
                     src={thumbs[cam.seq]}
                     alt=""
-                    style={{ transform: `rotate(${cam.rotation ?? 0}deg)` }}
+                    style={{ transform: compact ? undefined : previewTransform(cam) }}
                     className={(cam.rotation ?? 0) % 180 !== 0 ? 'rot90' : ''}
                     draggable={false}
                   />
                 )}
                 <span className="chip cam-chip">{cam.name}</span>
-                <button
-                  type="button"
-                  className="le-rot mono"
-                  title="旋轉 90°"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setRotation(cam.seq, ((cam.rotation ?? 0) + 90) % 360)
-                  }}
-                >⟳{cam.rotation ?? 0}</button>
+                <div className="le-transform-controls">
+                  <button
+                    type="button"
+                    className={`le-transform mono ${cam.mirror_h ? 'on' : ''}`}
+                    title="水平鏡像"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleMirror(cam.seq, 'mirror_h')
+                    }}
+                  >水平</button>
+                  <button
+                    type="button"
+                    className={`le-transform mono ${cam.mirror_v ? 'on' : ''}`}
+                    title="垂直鏡像"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleMirror(cam.seq, 'mirror_v')
+                    }}
+                  >垂直</button>
+                  <button
+                    type="button"
+                    className="le-transform mono"
+                    title="旋轉 90°"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRotation(cam.seq, ((cam.rotation ?? 0) + 90) % 360)
+                    }}
+                  >⟳{cam.rotation ?? 0}</button>
+                </div>
               </>
             ) : (
               <span className="hint">空位</span>
@@ -184,6 +219,18 @@ export default function LayoutEditor({
                 >
                   {ROT_OPTIONS.map((r) => <option key={r} value={r}>{r}°</option>)}
                 </select>
+                <button
+                  type="button"
+                  className={`btn small ${c.mirror_h ? 'primary' : ''}`}
+                  aria-pressed={!!c.mirror_h}
+                  onClick={() => toggleMirror(c.seq, 'mirror_h')}
+                >水平鏡像</button>
+                <button
+                  type="button"
+                  className={`btn small ${c.mirror_v ? 'primary' : ''}`}
+                  aria-pressed={!!c.mirror_v}
+                  onClick={() => toggleMirror(c.seq, 'mirror_v')}
+                >垂直鏡像</button>
                 {onRemoveCamera && (
                   <button
                     type="button"

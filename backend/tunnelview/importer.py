@@ -58,6 +58,8 @@ class CameraInput:
     name: str
     folder: str
     rotation: int = 0
+    mirror_h: bool = False
+    mirror_v: bool = False
     grid_pos: int = -1
 
 
@@ -464,6 +466,8 @@ class TunnelImporter:
                     "name": c.name,
                     "root_path": c.folder,
                     "rotation": c.rotation,
+                    "mirror_h": c.mirror_h,
+                    "mirror_v": c.mirror_v,
                     "grid_pos": c.grid_pos,
                 }
                 for c in req.cameras
@@ -583,6 +587,8 @@ class TunnelImporter:
                             "photo_count": len(s.photos),
                             "offset_seconds": result.offsets_seconds[s.camera_index],
                             "rotation": req.cameras[s.camera_index].rotation,
+                            "mirror_h": req.cameras[s.camera_index].mirror_h,
+                            "mirror_v": req.cameras[s.camera_index].mirror_v,
                         }
                         for s in series
                     ],

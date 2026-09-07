@@ -271,6 +271,25 @@ class TestRotation:
         assert env.put(f"/api/tunnels/{env.tid}/photos/{pid}/rotation", json={"angle": 45}).status_code == 400
         assert env.put(f"/api/tunnels/{env.tid}/cameras/0", json={"rotation": 33}).status_code == 400
 
+    def test_camera_mirrors_toggle_for_whole_camera(self, env):
+        r = env.put(
+            f"/api/tunnels/{env.tid}/cameras/0",
+            json={"mirror_h": True, "mirror_v": True},
+        )
+        assert r.status_code == 200
+        camera = env.get(f"/api/tunnels/{env.tid}/info").json()["cameras"][0]
+        assert camera["mirror_h"] is True
+        assert camera["mirror_v"] is True
+
+        r = env.put(
+            f"/api/tunnels/{env.tid}/cameras/0",
+            json={"mirror_h": False, "mirror_v": False},
+        )
+        assert r.status_code == 200
+        camera = env.get(f"/api/tunnels/{env.tid}/info").json()["cameras"][0]
+        assert camera["mirror_h"] is False
+        assert camera["mirror_v"] is False
+
 
 class TestInfoPanel:
     def test_info_aggregates_everything(self, env):
@@ -279,6 +298,8 @@ class TestInfoPanel:
         assert info["report"]["tolerance_seconds"] == 2.0
         assert len(info["report"]["cameras"]) == 2
         assert info["cameras"][0]["rotation"] == 0
+        assert info["cameras"][0]["mirror_h"] is False
+        assert info["cameras"][0]["mirror_v"] is False
         assert isinstance(info["manual_missing"], list)
         assert isinstance(info["rotation_overrides"], list)
         assert isinstance(info["dangling_anchors"], list)

@@ -59,9 +59,11 @@ class TestTunnelSchemaV6:
         )
         with ws.open_tunnel(info.tunnel_id) as conn:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
+            camera_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cameras)")}
         assert "orientation" in cols
         assert "pixel_version" in cols
-        assert SCHEMA_VERSION == "7"
+        assert {"mirror_h", "mirror_v"} <= camera_cols
+        assert SCHEMA_VERSION == "8"
 
     def test_v5_tunnel_migrates_and_keeps_rows(self, tmp_path, ws):
         d = tmp_path / "cam"
@@ -120,7 +122,7 @@ class TestTunnelSchemaV6:
             ).fetchone()["value"]
         assert {"orientation", "pixel_version"} <= cols
         assert n == 1
-        assert ver == "7"
+        assert ver == "8"
 
 
 class TestProjects:

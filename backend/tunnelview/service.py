@@ -153,7 +153,8 @@ class TunnelService:
                 "g.est_mileage_m AS gest, g.missing_count AS gmissing, "
                 "p.id AS photo_id, c.seq AS camera_seq, p.rel_path, p.flagged, "
                 "p.width, p.height, p.rotation_override AS rotation_override, "
-                "c.rotation AS camera_rotation, p.exif_time, p.corrected_time, "
+                "c.rotation AS camera_rotation, c.mirror_h, c.mirror_v, "
+                "p.exif_time, p.corrected_time, "
                 "p.time_source, p.aspect_anomaly, "
                 "(p.width IS NOT NULL AND p.height IS NOT NULL) AS has_dims, "
                 "COALESCE(p.pixel_version, 0) AS pixel_version "
@@ -203,6 +204,8 @@ class TunnelService:
                             "height": r["height"],
                             "rotation_override": r["rotation_override"],
                             "camera_rotation": r["camera_rotation"],
+                            "mirror_h": bool(r["mirror_h"]),
+                            "mirror_v": bool(r["mirror_v"]),
                             "exif_time": r["exif_time"],
                             "corrected_time": r["corrected_time"],
                             "time_source": r["time_source"],
@@ -309,6 +312,7 @@ class TunnelService:
         try:
             row = conn.execute(
                 "SELECT c.root_path, p.rel_path, p.rotation_override AS ro, c.rotation AS cam_rot, "
+                "c.mirror_h, c.mirror_v, "
                 "p.orientation AS orientation, COALESCE(p.pixel_version, 0) AS pixel_version "
                 "FROM photos p JOIN cameras c ON c.id = p.camera_id WHERE p.id = ?",
                 (photo_id,),
@@ -324,6 +328,8 @@ class TunnelService:
         return {
             "path": Path(row["root_path"]) / row["rel_path"],
             "extra_rotation": int(extra or 0) % 360,
+            "mirror_h": bool(row["mirror_h"]),
+            "mirror_v": bool(row["mirror_v"]),
             "orientation": row["orientation"],
             "pixel_version": int(row["pixel_version"]),
         }
@@ -829,6 +835,31 @@ class TunnelService:
         finally:
             conn.close()
 
+    def set_camera_mirrors(
+        self, tunnel_id: int, camera_seq: int, mirror_h: bool | None, mirror_v: bool | None
+    ) -> None:
+        updates = []
+        values = []
+        if mirror_h is not None:
+            updates.append("mirror_h = ?")
+            values.append(int(mirror_h))
+        if mirror_v is not None:
+            updates.append("mirror_v = ?")
+            values.append(int(mirror_v))
+        if not updates:
+            return
+        conn = self.ws.open_tunnel(tunnel_id)
+        try:
+            with conn:
+                cur = conn.execute(
+                    f"UPDATE cameras SET {', '.join(updates)} WHERE seq = ?",
+                    (*values, camera_seq),
+                )
+                if cur.rowcount == 0:
+                    raise KeyError(camera_seq)
+        finally:
+            conn.close()
+
     def set_camera_grid_pos(self, tunnel_id: int, camera_seq: int, grid_pos: int) -> None:
         conn = self.ws.open_tunnel(tunnel_id)
         try:
@@ -956,9 +987,13 @@ class TunnelService:
             cameras = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT seq, name, rotation, grid_pos FROM cameras ORDER BY seq"
+                    "SELECT seq, name, rotation, mirror_h, mirror_v, grid_pos "
+                    "FROM cameras ORDER BY seq"
                 ).fetchall()
             ]
+            for camera in cameras:
+                camera["mirror_h"] = bool(camera["mirror_h"])
+                camera["mirror_v"] = bool(camera["mirror_v"])
 
             # 匯入報告保留掃描結果，但群組統計必須反映合併後的即時狀態。
             missing_rows = conn.execute(

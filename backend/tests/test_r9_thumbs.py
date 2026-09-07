@@ -65,6 +65,26 @@ class TestBackends:
         data = thumbs.make_thumbnail(jpeg_file, 40)
         assert _dims(data) == (40, 20)
 
+    def test_pillow_horizontal_and_vertical_mirrors(self, tmp_path):
+        src = tmp_path / "mirror.png"
+        img = Image.new("RGB", (20, 20), (255, 0, 0))
+        for x in range(10, 20):
+            for y in range(20):
+                img.putpixel((x, y), (0, 255, 0))
+        for x in range(20):
+            for y in range(10, 20):
+                img.putpixel((x, y), (0, 0, 255))
+        img.save(src)
+
+        horizontal = Image.open(
+            io.BytesIO(thumbs._pil_thumb(src, None, False, 0, 100, True, False))
+        )
+        vertical = Image.open(
+            io.BytesIO(thumbs._pil_thumb(src, None, False, 0, 100, False, True))
+        )
+        assert horizontal.getpixel((2, 2))[1] > horizontal.getpixel((2, 2))[0]
+        assert vertical.getpixel((2, 2))[2] > vertical.getpixel((2, 2))[0]
+
     @pytest.mark.skipif(not thumbs.HAVE_PYVIPS, reason="pyvips 未安裝")
     def test_rotation_semantics_match_pil(self, tmp_path):
         """vips.rot(dN) 必須與 PIL rotate(-N) 一致（R9 前 API 的行為基準）。"""

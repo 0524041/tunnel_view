@@ -29,8 +29,8 @@ export default function WizardPage({ onDone, onCancel }) {
   const [tolerance, setTolerance] = useState(2)
   const [layoutCols, setLayoutCols] = useState('auto')
   const [cameras, setCameras] = useState([
-    { seq: 0, name: '頂拱左', folder: '', rotation: 0, grid_pos: -1 },
-    { seq: 1, name: '頂拱右', folder: '', rotation: 0, grid_pos: -1 },
+    { seq: 0, name: '頂拱左', folder: '', rotation: 0, mirror_h: false, mirror_v: false, grid_pos: -1 },
+    { seq: 1, name: '頂拱右', folder: '', rotation: 0, mirror_h: false, mirror_v: false, grid_pos: -1 },
   ])
   const [thumbs, setThumbs] = useState({})
   const [pickerFor, setPickerFor] = useState(null)
@@ -89,7 +89,7 @@ export default function WizardPage({ onDone, onCancel }) {
   const pickFolder = (i, pick) => {
     setCameras((cs) =>
       cs.map((c, j) =>
-        j === i ? { ...c, folder: pick.folder, rotation: pick.rotation } : c,
+        j === i ? { ...c, ...pick } : c,
       ),
     )
     loadThumb(cameras[i]?.seq ?? i, pick.folder)
@@ -262,6 +262,8 @@ export default function WizardPage({ onDone, onCancel }) {
               <FsBrowser
                 initialPath={cameras[pickerFor]?.folder || ''}
                 initialRotation={cameras[pickerFor]?.rotation ?? 0}
+                initialMirrorH={cameras[pickerFor]?.mirror_h ?? false}
+                initialMirrorV={cameras[pickerFor]?.mirror_v ?? false}
                 onPick={(pick) => pickFolder(pickerFor, pick)}
                 onClose={() => setPickerFor(null)}
               />
@@ -289,7 +291,15 @@ export default function WizardPage({ onDone, onCancel }) {
               onClick={() =>
                 setCameras((cs) => [
                   ...cs,
-                  { seq: cs.length, name: `視角 ${cs.length + 1}`, folder: '', rotation: 0, grid_pos: -1 },
+                  {
+                    seq: cs.length,
+                    name: `視角 ${cs.length + 1}`,
+                    folder: '',
+                    rotation: 0,
+                    mirror_h: false,
+                    mirror_v: false,
+                    grid_pos: -1,
+                  },
                 ])
               }
             >＋ 新增相機</button>

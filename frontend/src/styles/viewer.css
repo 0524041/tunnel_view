@@ -674,16 +674,24 @@ kbd {
   height: 100%;
   object-fit: cover;
 }
-.le-rot {
+.le-transform-controls {
   position: absolute;
   right: 4px;
   bottom: 4px;
+  display: flex;
+  gap: 3px;
+}
+.le-transform {
   font-size: 0.6875rem;
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(0,0,0,0.65);
   color: var(--image-accent);
   border: 1px solid var(--image-accent);
+}
+.le-transform.on {
+  background: var(--image-accent);
+  color: #061014;
 }
 .le-cards {
   margin-top: 12px;
